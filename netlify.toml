@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Single-page app: every route must fall through to index.html,
+# otherwise refreshing on /attendance returns a 404.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

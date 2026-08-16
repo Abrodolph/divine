@@ -1,0 +1,488 @@
+-- =============================================================================
+-- GRIDWATCH — full database schema
+-- Run this ONCE in the Supabase SQL Editor on a brand new project.
+-- Safe to re-run: everything is written with "if not exists" / "or replace".
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- 1. ROLES  (who can do what, per module)
+-- ---------------------------------------------------------------------------
+create table if not exists public.roles (
+  id          text primary key,
+  name        text not null,
+  is_admin    boolean not null default false,
+  permissions jsonb  not null default '{}'::jsonb
+);
+
+-- Module keys used everywhere in the app and in the permission maps:
+--   attendance, dpr, requirements, indents, material_received, site_photos,
+--   challans, transport, mtc, drawings, rework, sites, team, advances, payroll
+-- Values: 'none' | 'view' | 'edit'
+
+insert into public.roles (id, name, is_admin, permissions) values
+  ('admin', 'Admin', true, '{}'::jsonb),
+  ('site', 'Site Team', false, '{
+     "attendance":"edit","dpr":"edit","requirements":"edit","site_photos":"edit",
+     "material_received":"edit","rework":"edit","indents":"edit","challans":"edit",
+     "transport":"edit","mtc":"edit","drawings":"view","sites":"view",
+     "team":"none","advances":"none","payroll":"none"}'::jsonb),
+  ('office', 'Office / Store', false, '{
+     "attendance":"view","dpr":"view","requirements":"edit","site_photos":"view",
+     "material_received":"edit","rework":"view","indents":"edit","challans":"edit",
+     "transport":"edit","mtc":"edit","drawings":"edit","sites":"edit",
+     "team":"edit","advances":"edit","payroll":"none"}'::jsonb),
+  ('viewer', 'Viewer', false, '{
+     "attendance":"view","dpr":"view","requirements":"view","site_photos":"view",
+     "material_received":"view","rework":"view","indents":"view","challans":"view",
+     "transport":"view","mtc":"view","drawings":"view","sites":"view",
+     "team":"view","advances":"view","payroll":"view"}'::jsonb)
+on conflict (id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- 2. PROFILES  (one row per login, auto-created on signup)
+-- ---------------------------------------------------------------------------
+create table if not exists public.profiles (
+  id         uuid primary key references auth.users on delete cascade,
+  name       text not null default 'New User',
+  phone      text,
+  role_id    text not null default 'viewer' references public.roles(id),
+  active     boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+-- Every new auth user automatically gets a profile.
+-- The FIRST user ever to sign up becomes Admin; everyone after that is a Viewer
+-- until the Admin promotes them from the in-app Admin Control screen.
+create or replace function public.handle_new_user()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  is_first boolean;
+begin
+  select count(*) = 0 into is_first from public.profiles;
+  insert into public.profiles (id, name, role_id)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data ->> 'name', split_part(new.email, '@', 1)),
+    case when is_first then 'admin' else 'viewer' end
+  )
+  on conflict (id) do nothing;
+  return new;
+end $$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- ---------------------------------------------------------------------------
+-- 3. MODULE LOCKS  (admin can freeze a module once a month is finalised)
+-- ---------------------------------------------------------------------------
+create table if not exists public.module_locks (
+  module text primary key,
+  locked boolean not null default false
+);
+
+-- ---------------------------------------------------------------------------
+-- 4. PERMISSION HELPERS  (used by every Row Level Security policy below)
+-- ---------------------------------------------------------------------------
+create or replace function public.is_admin()
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((
+    select r.is_admin
+    from public.profiles p
+    join public.roles r on r.id = p.role_id
+    where p.id = auth.uid() and p.active
+  ), false);
+$$;
+
+create or replace function public.can_edit(module_key text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((
+    select r.is_admin or (
+      r.permissions ->> module_key = 'edit'
+      and not coalesce(
+        (select l.locked from public.module_locks l where l.module = module_key), false)
+    )
+    from public.profiles p
+    join public.roles r on r.id = p.role_id
+    where p.id = auth.uid() and p.active
+  ), false);
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 5. MASTER DATA
+-- ---------------------------------------------------------------------------
+create table if not exists public.sites (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null,
+  location   text,
+  contact    text,
+  active     boolean not null default true,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users
+);
+
+create table if not exists public.employees (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null,
+  trade      text,
+  site_id    uuid references public.sites on delete set null,
+  wage_type  text not null default 'Daily',   -- Daily | Monthly
+  wage_rate  numeric not null default 0,
+  phone      text,
+  active     boolean not null default true,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users
+);
+
+-- ---------------------------------------------------------------------------
+-- 6. SITE MODULES
+-- ---------------------------------------------------------------------------
+
+-- Daily muster: ONE row per site per day.
+create table if not exists public.attendance (
+  id           uuid primary key default gen_random_uuid(),
+  date         date not null default current_date,
+  site_id      uuid not null references public.sites on delete cascade,
+  present_ids  uuid[] not null default '{}',
+  visitors     text,
+  group_photo  text,
+  lat          numeric,
+  lng          numeric,
+  accuracy_m   numeric,
+  marked_by    text,
+  note         text,
+  created_at   timestamptz not null default now(),
+  created_by   uuid references auth.users,
+  unique (date, site_id)
+);
+
+create table if not exists public.dpr (
+  id            uuid primary key default gen_random_uuid(),
+  date          date not null default current_date,
+  site_id       uuid references public.sites on delete cascade,
+  work_done     text not null,
+  manpower      integer,
+  weather       text,
+  material_used text,
+  issues        text,
+  reported_by   text,
+  photos        text[] not null default '{}',
+  created_at    timestamptz not null default now(),
+  created_by    uuid references auth.users
+);
+
+create table if not exists public.requirements (
+  id         uuid primary key default gen_random_uuid(),
+  date       date not null default current_date,
+  site_id    uuid references public.sites on delete cascade,
+  item       text not null,
+  qty        text,
+  priority   text default 'Medium',
+  status     text default 'Open',
+  raised_by  text,
+  remarks    text,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users
+);
+
+create table if not exists public.indents (
+  id           uuid primary key default gen_random_uuid(),
+  doc_no       text,
+  date         date not null default current_date,
+  site_id      uuid references public.sites on delete cascade,
+  requested_by text,
+  priority     text default 'Medium',
+  status       text default 'Pending',
+  needed_by    date,
+  items        jsonb not null default '[]'::jsonb,
+  remarks      text,
+  created_at   timestamptz not null default now(),
+  created_by   uuid references auth.users
+);
+
+create table if not exists public.material_received (
+  id          uuid primary key default gen_random_uuid(),
+  date        date not null default current_date,
+  site_id     uuid references public.sites on delete cascade,
+  item        text not null,
+  qty         text,
+  supplier    text,
+  vehicle_no  text,
+  challan_ref text,
+  received_by text,
+  photos      text[] not null default '{}',
+  remarks     text,
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users
+);
+
+create table if not exists public.site_photos (
+  id          uuid primary key default gen_random_uuid(),
+  date        date not null default current_date,
+  site_id     uuid references public.sites on delete cascade,
+  area        text,
+  caption     text,
+  uploaded_by text,
+  photos      text[] not null default '{}',
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users
+);
+
+create table if not exists public.challans (
+  id               uuid primary key default gen_random_uuid(),
+  doc_no           text,
+  date             date not null default current_date,
+  site_id          uuid references public.sites on delete cascade,
+  party            text,
+  party_address    text,
+  vehicle_no       text,
+  transporter_name text,
+  driver_name      text,
+  driver_phone     text,
+  items            jsonb not null default '[]'::jsonb,
+  remarks          text,
+  created_at       timestamptz not null default now(),
+  created_by       uuid references auth.users
+);
+
+create table if not exists public.transport (
+  id               uuid primary key default gen_random_uuid(),
+  date             date not null default current_date,
+  vehicle_no       text not null,
+  transporter_name text,
+  driver_name      text,
+  driver_phone     text,
+  from_loc         text,
+  site_id          uuid references public.sites on delete set null,
+  purpose          text,
+  lr_no            text,
+  freight          numeric,
+  photos           text[] not null default '{}',
+  remarks          text,
+  created_at       timestamptz not null default now(),
+  created_by       uuid references auth.users
+);
+
+create table if not exists public.mtc (
+  id         uuid primary key default gen_random_uuid(),
+  date       date not null default current_date,
+  site_id    uuid references public.sites on delete set null,
+  material   text not null,
+  supplier   text,
+  batch_no   text,
+  cert_no    text,
+  test_date  date,
+  result     text default 'Pending',
+  photos     text[] not null default '{}',
+  remarks    text,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users
+);
+
+create table if not exists public.drawings (
+  id         uuid primary key default gen_random_uuid(),
+  date       date not null default current_date,
+  site_id    uuid references public.sites on delete set null,
+  drawing_no text not null,
+  title      text not null,
+  discipline text,
+  revision   text,
+  status     text default 'For Review',
+  received_from text,
+  photos     text[] not null default '{}',
+  remarks    text,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users
+);
+
+create table if not exists public.rework (
+  id          uuid primary key default gen_random_uuid(),
+  date        date not null default current_date,
+  site_id     uuid references public.sites on delete cascade,
+  area        text,
+  issue       text not null,
+  cause       text,
+  action      text,
+  responsible text,
+  status      text default 'Open',
+  photos      text[] not null default '{}',
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users
+);
+
+-- ---------------------------------------------------------------------------
+-- 7. MONEY
+-- ---------------------------------------------------------------------------
+create table if not exists public.advances (
+  id          uuid primary key default gen_random_uuid(),
+  date        date not null default current_date,
+  employee_id uuid references public.employees on delete cascade,
+  amount      numeric not null default 0,
+  week        text,
+  remarks     text,
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users
+);
+
+create table if not exists public.payroll_runs (
+  id           uuid primary key default gen_random_uuid(),
+  month        text not null,          -- 'YYYY-MM'
+  rows         jsonb not null default '[]'::jsonb,
+  totals       jsonb not null default '{}'::jsonb,
+  generated_at timestamptz not null default now(),
+  created_by   uuid references auth.users
+);
+
+-- ---------------------------------------------------------------------------
+-- 8. DOCUMENT NUMBERING  (gap-free, survives deletions — unlike counting rows)
+-- ---------------------------------------------------------------------------
+create table if not exists public.doc_counters (
+  key   text primary key,
+  value integer not null default 0
+);
+
+create or replace function public.next_doc_no(p_prefix text)
+returns text language plpgsql security definer set search_path = public as $$
+declare
+  k text := p_prefix || '-' || to_char(now(), 'YYYY');
+  n integer;
+begin
+  insert into public.doc_counters (key, value) values (k, 1)
+  on conflict (key) do update set value = public.doc_counters.value + 1
+  returning value into n;
+  return p_prefix || '-' || lpad(n::text, 4, '0') || '-' || to_char(now(), 'YYYY');
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 9. HELPFUL INDEXES
+-- ---------------------------------------------------------------------------
+create index if not exists idx_attendance_date on public.attendance (date desc);
+create index if not exists idx_attendance_site on public.attendance (site_id);
+create index if not exists idx_dpr_date on public.dpr (date desc);
+create index if not exists idx_requirements_status on public.requirements (status);
+create index if not exists idx_indents_status on public.indents (status);
+create index if not exists idx_advances_date on public.advances (date desc);
+create index if not exists idx_employees_site on public.employees (site_id);
+
+-- ---------------------------------------------------------------------------
+-- 10. ROW LEVEL SECURITY
+--     Read: any signed-in user. Write: gated by role permission + module lock.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  t record;
+begin
+  for t in
+    select * from (values
+      ('sites','sites'), ('employees','team'), ('attendance','attendance'),
+      ('dpr','dpr'), ('requirements','requirements'), ('indents','indents'),
+      ('material_received','material_received'), ('site_photos','site_photos'),
+      ('challans','challans'), ('transport','transport'), ('mtc','mtc'),
+      ('drawings','drawings'), ('rework','rework'), ('advances','advances'),
+      ('payroll_runs','payroll')
+    ) as x(tbl, module)
+  loop
+    execute format('alter table public.%I enable row level security', t.tbl);
+
+    execute format('drop policy if exists read_all on public.%I', t.tbl);
+    execute format(
+      'create policy read_all on public.%I for select to authenticated using (true)', t.tbl);
+
+    execute format('drop policy if exists write_ins on public.%I', t.tbl);
+    execute format(
+      'create policy write_ins on public.%I for insert to authenticated with check (public.can_edit(%L))',
+      t.tbl, t.module);
+
+    execute format('drop policy if exists write_upd on public.%I', t.tbl);
+    execute format(
+      'create policy write_upd on public.%I for update to authenticated using (public.can_edit(%L)) with check (public.can_edit(%L))',
+      t.tbl, t.module, t.module);
+
+    execute format('drop policy if exists write_del on public.%I', t.tbl);
+    execute format(
+      'create policy write_del on public.%I for delete to authenticated using (public.can_edit(%L))',
+      t.tbl, t.module);
+  end loop;
+end $$;
+
+-- Profiles: everyone signed in can read the staff list (needed to show names);
+-- you may edit your own name/phone; only Admin may change roles or delete.
+alter table public.profiles enable row level security;
+drop policy if exists profiles_read on public.profiles;
+create policy profiles_read on public.profiles
+  for select to authenticated using (true);
+drop policy if exists profiles_self_update on public.profiles;
+create policy profiles_self_update on public.profiles
+  for update to authenticated using (id = auth.uid() or public.is_admin())
+  with check (id = auth.uid() or public.is_admin());
+drop policy if exists profiles_admin_insert on public.profiles;
+create policy profiles_admin_insert on public.profiles
+  for insert to authenticated with check (public.is_admin());
+drop policy if exists profiles_admin_delete on public.profiles;
+create policy profiles_admin_delete on public.profiles
+  for delete to authenticated using (public.is_admin() and id <> auth.uid());
+
+-- Roles: readable by all, editable by Admin only.
+alter table public.roles enable row level security;
+drop policy if exists roles_read on public.roles;
+create policy roles_read on public.roles for select to authenticated using (true);
+drop policy if exists roles_admin_write on public.roles;
+create policy roles_admin_write on public.roles for all to authenticated
+  using (public.is_admin()) with check (public.is_admin());
+
+-- Module locks: readable by all, toggled by Admin only.
+alter table public.module_locks enable row level security;
+drop policy if exists locks_read on public.module_locks;
+create policy locks_read on public.module_locks for select to authenticated using (true);
+drop policy if exists locks_admin_write on public.module_locks;
+create policy locks_admin_write on public.module_locks for all to authenticated
+  using (public.is_admin()) with check (public.is_admin());
+
+-- Doc counters: any signed-in user may consume a number via next_doc_no().
+alter table public.doc_counters enable row level security;
+drop policy if exists counters_read on public.doc_counters;
+create policy counters_read on public.doc_counters for select to authenticated using (true);
+
+-- ---------------------------------------------------------------------------
+-- 11. STORAGE  (photo uploads)
+-- ---------------------------------------------------------------------------
+insert into storage.buckets (id, name, public)
+values ('uploads', 'uploads', true)
+on conflict (id) do nothing;
+
+drop policy if exists uploads_read on storage.objects;
+create policy uploads_read on storage.objects
+  for select using (bucket_id = 'uploads');
+
+drop policy if exists uploads_write on storage.objects;
+create policy uploads_write on storage.objects
+  for insert to authenticated with check (bucket_id = 'uploads');
+
+drop policy if exists uploads_delete on storage.objects;
+create policy uploads_delete on storage.objects
+  for delete to authenticated using (bucket_id = 'uploads');
+
+-- ---------------------------------------------------------------------------
+-- 12. REALTIME  (live updates in the office while site is typing)
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'sites','employees','attendance','dpr','requirements','indents',
+    'material_received','site_photos','challans','transport','mtc',
+    'drawings','rework','advances','payroll_runs','profiles','module_locks'
+  ] loop
+    begin
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    exception when duplicate_object then null;
+    end;
+  end loop;
+end $$;
+
+-- =============================================================================
+-- DONE.  Next: create your first login (Authentication -> Users -> Add user).
+-- That first account automatically becomes Admin.
+-- =============================================================================

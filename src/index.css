@@ -1,0 +1,70 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  background: #14171a;
+}
+
+body {
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  color: #edeae3;
+}
+
+/* Native dropdowns render white-on-white in dark mode on some browsers. */
+select option {
+  background: #1d2124;
+  color: #edeae3;
+}
+
+/* Keep date/time pickers legible on the dark panels. */
+input[type='date'],
+input[type='time'],
+input[type='month'] {
+  color-scheme: dark;
+}
+
+::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #33393e;
+  border-radius: 4px;
+}
+
+/* iOS zooms the page when a font smaller than 16px gets focus. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body,
+  #root {
+    background: #fff !important;
+  }
+  .print-area {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    box-shadow: none;
+  }
+}
