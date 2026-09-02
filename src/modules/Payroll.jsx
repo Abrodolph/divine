@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Printer } from 'lucide-react';
+import { Printer, Pencil } from 'lucide-react';
 import { THEME } from '../lib/theme';
 import { inr, monthLabel, thisMonth, fmtDate } from '../lib/format';
 import { supabase } from '../lib/supabase';
@@ -9,8 +9,8 @@ import { useAuth } from '../context/AuthContext';
 import { moduleByKey } from '../config/modules';
 import { COMPANY } from '../config/company';
 import {
-  SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, TableWrap, Th, Td,
-  DeleteBtn, ExportButton, Banner,
+  SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, Field, Input,
+  TableWrap, Th, Td, IconBtn, DeleteBtn, ExportButton, Banner, Modal,
 } from '../components/ui';
 
 const MODULE = moduleByKey('payroll');
@@ -20,7 +20,9 @@ const MODULE = moduleByKey('payroll');
  *   days present = number of attendance musters in the month that include
  *                  the worker in present_ids
  *   gross        = monthly wage, or daily wage x days present
- *   net          = gross - advances taken that month
+ *   net          = gross - advances taken that month, unless a manual salary
+ *                  adjustment exists for that worker/month (e.g. a raise that
+ *                  took effect mid-month) — that figure wins instead.
  * "Save run" freezes those numbers as a snapshot so later edits to attendance
  * don't quietly rewrite a salary you already paid.
  */
@@ -34,10 +36,16 @@ export default function Payroll() {
   const [month, setMonth] = useState(thisMonth());
   const [attendance, setAttendance] = useState([]);
   const [advances, setAdvances] = useState([]);
+  const [adjustments, setAdjustments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [printId, setPrintId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+
+  const [editingId, setEditingId] = useState(null);
+  const [overrideAmount, setOverrideAmount] = useState('');
+  const [overrideNote, setOverrideNote] = useState('');
+  const [savingOverride, setSavingOverride] = useState(false);
 
   const editable = canEdit('payroll');
   const locked = !!locks.payroll;
@@ -49,13 +57,15 @@ export default function Payroll() {
       setLoading(true);
       const start = `${month}-01`;
       const end = nextMonthStart(month);
-      const [a, adv] = await Promise.all([
+      const [a, adv, adj] = await Promise.all([
         supabase.from('attendance').select('date,present_ids').gte('date', start).lt('date', end),
         supabase.from('advances').select('employee_id,amount,date').gte('date', start).lt('date', end),
+        supabase.from('salary_adjustments').select('*').eq('month', month),
       ]);
       if (cancelled) return;
       setAttendance(a.data ?? []);
       setAdvances(adv.data ?? []);
+      setAdjustments(adj.data ?? []);
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -73,6 +83,8 @@ export default function Payroll() {
         const advance = advances
           .filter((a) => a.employee_id === emp.id)
           .reduce((s, a) => s + (Number(a.amount) || 0), 0);
+        const calculatedNet = gross - advance;
+        const override = adjustments.find((a) => a.employee_id === emp.id) ?? null;
         return {
           employee_id: emp.id,
           name: emp.name,
@@ -83,10 +95,12 @@ export default function Payroll() {
           days_present: days,
           gross,
           advance,
-          net: gross - advance,
+          calculatedNet,
+          override,
+          net: override ? Number(override.amount) : calculatedNet,
         };
       });
-  }, [employees, attendance, advances, siteName]);
+  }, [employees, attendance, advances, adjustments, siteName]);
 
   const totals = useMemo(
     () => rows.reduce(
@@ -99,6 +113,7 @@ export default function Payroll() {
   const day = new Date().getDate();
   const dueSoon = day >= 1 && day <= 7;
   const printRun = runs.find((r) => r.id === printId);
+  const editingRow = rows.find((r) => r.employee_id === editingId) ?? null;
 
   async function handleSave() {
     setSaving(true);
@@ -109,6 +124,53 @@ export default function Payroll() {
       setError(e.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  function startEditSalary(row) {
+    setEditingId(row.employee_id);
+    setOverrideAmount(String(row.net));
+    setOverrideNote(row.override?.note ?? '');
+    setError(null);
+  }
+
+  async function saveOverride(e) {
+    e.preventDefault();
+    const n = Number(overrideAmount);
+    if (overrideAmount === '' || Number.isNaN(n)) { setError('Enter a valid amount.'); return; }
+    setSavingOverride(true);
+    setError(null);
+    try {
+      const { data, error: err } = await supabase.from('salary_adjustments')
+        .upsert(
+          { employee_id: editingId, month, amount: n, note: overrideNote || null, updated_at: new Date().toISOString() },
+          { onConflict: 'employee_id,month' }
+        )
+        .select()
+        .single();
+      if (err) throw err;
+      setAdjustments((prev) => [...prev.filter((a) => a.employee_id !== editingId), data]);
+      setEditingId(null);
+    } catch (err) {
+      setError(err.message || 'Could not save the adjustment.');
+    } finally {
+      setSavingOverride(false);
+    }
+  }
+
+  async function clearOverride(employeeId) {
+    setSavingOverride(true);
+    setError(null);
+    try {
+      const { error: err } = await supabase.from('salary_adjustments')
+        .delete().eq('employee_id', employeeId).eq('month', month);
+      if (err) throw err;
+      setAdjustments((prev) => prev.filter((a) => a.employee_id !== employeeId));
+      setEditingId(null);
+    } catch (err) {
+      setError(err.message || 'Could not remove the adjustment.');
+    } finally {
+      setSavingOverride(false);
     }
   }
 
@@ -187,7 +249,15 @@ export default function Payroll() {
                   <Td>{r.wage_type === 'Monthly' ? '—' : r.days_present}</Td>
                   <Td>{inr(r.gross)}</Td>
                   <Td><span style={{ color: THEME.amber }}>{r.advance ? `-${inr(r.advance)}` : '—'}</span></Td>
-                  <Td><span className="font-semibold" style={{ color: THEME.green }}>{inr(r.net)}</span></Td>
+                  <Td>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-semibold" style={{ color: THEME.green }}>{inr(r.net)}</span>
+                      {r.override && <span className="text-xs" style={{ color: THEME.amber }}>edited</span>}
+                      {editable && !locked && (
+                        <IconBtn icon={Pencil} title="Edit salary" onClick={() => startEditSalary(r)} />
+                      )}
+                    </div>
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -239,6 +309,48 @@ export default function Payroll() {
 
       {printRun && <SalaryPrint run={printRun} />}
       {error && <div className="text-xs mt-3" style={{ color: THEME.red }}>{error}</div>}
+
+      <Modal open={!!editingId} onClose={() => setEditingId(null)} title={editingRow?.name ?? ''} accent={MODULE.accent}>
+        {editingRow && (
+          <form onSubmit={saveOverride} className="space-y-3 text-sm">
+            <div className="grid grid-cols-2 gap-3">
+              <Info label="Calculated net" value={inr(editingRow.calculatedNet)} />
+              <Info label="Days present" value={editingRow.wage_type === 'Monthly' ? '—' : editingRow.days_present} />
+            </div>
+            <Field label="Final net payable (₹)" required>
+              <Input type="number" step="0.01" autoFocus required
+                value={overrideAmount} onChange={(e) => setOverrideAmount(e.target.value)} />
+            </Field>
+            <Field label="Note (optional)" hint="Why this differs from the calculated amount — a raise effective mid-month, bonus, correction…">
+              <Input value={overrideNote} onChange={(e) => setOverrideNote(e.target.value)}
+                placeholder="e.g. Raised to ₹700/day from the 15th" />
+            </Field>
+            <div className="flex items-center justify-between gap-2 pt-1">
+              {editingRow.override ? (
+                <button type="button" className="text-xs" style={{ color: THEME.red }}
+                  onClick={() => clearOverride(editingRow.employee_id)} disabled={savingOverride}>
+                  Remove override, use calculated
+                </button>
+              ) : <span />}
+              <div className="flex gap-2">
+                <Btn type="button" variant="subtle" onClick={() => setEditingId(null)}>Cancel</Btn>
+                <Btn type="submit" accent={MODULE.accent} disabled={savingOverride}>
+                  {savingOverride ? 'Saving…' : 'Save'}
+                </Btn>
+              </div>
+            </div>
+          </form>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+function Info({ label, value }) {
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wide" style={{ color: THEME.textDim }}>{label}</div>
+      <div className="mt-0.5">{value}</div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import {
   Home, Users2, FileText, ClipboardList, Package, Camera, Images,
   FileCheck2, Truck, ScrollText, PenTool, RotateCcw, Building2,
-  Users, Wallet, Calculator, ShieldCheck,
+  Users, Wallet, Calculator, ShieldCheck, CalendarCheck,
 } from 'lucide-react';
 import { THEME } from '../lib/theme';
 
@@ -28,6 +28,7 @@ export const MODULES = [
   { key: 'team',              label: 'Team',              short: 'Team',       icon: Users,        accent: THEME.blue,   group: 'Setup' },
   { key: 'advances',          label: 'Weekly Advance',    short: 'Advances',   icon: Wallet,       accent: THEME.amber,  group: 'Money' },
   { key: 'payroll',           label: 'Payroll',           short: 'Payroll',    icon: Calculator,   accent: THEME.green,  group: 'Money' },
+  { key: 'attendance_register', label: 'Attendance Register', short: 'Register', icon: CalendarCheck, accent: THEME.blue, group: 'Money' },
 ];
 
 export const DASHBOARD = { key: 'dashboard', label: 'Dashboard', icon: Home, accent: THEME.orange };

@@ -17,6 +17,7 @@ import Sites from './modules/Sites';
 import Team from './modules/Team';
 import Advances from './modules/Advances';
 import Payroll from './modules/Payroll';
+import AttendanceRegister from './modules/AttendanceRegister';
 import Admin from './modules/Admin';
 
 export default function App() {
@@ -58,6 +59,7 @@ function Shell() {
           <Route path="team" element={<Guard k="team"><Team /></Guard>} />
           <Route path="advances" element={<Guard k="advances"><Advances /></Guard>} />
           <Route path="payroll" element={<Guard k="payroll"><Payroll /></Guard>} />
+          <Route path="attendance_register" element={<Guard k="attendance_register"><AttendanceRegister /></Guard>} />
 
           {/* Config-driven log modules */}
           <Route path="dpr" element={

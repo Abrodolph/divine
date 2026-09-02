@@ -343,6 +343,34 @@ export function PhotoStrip({ photos = [], onOpen, size = 44 }) {
   );
 }
 
+/** Generic centered dialog — click the backdrop or the X to close. */
+export function Modal({ open, onClose, title, accent = THEME.orange, children }) {
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.6)' }}
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-xl p-5"
+        style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <h3 className="text-base font-semibold" style={{ fontFamily: 'Oswald', letterSpacing: '0.02em', color: accent }}>
+            {title}
+          </h3>
+          <button onClick={onClose} className="p-1 rounded shrink-0" style={{ color: THEME.textDim }} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function Lightbox({ src, onClose }) {
   if (!src) return null;
   return (

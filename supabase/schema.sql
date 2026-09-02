@@ -25,17 +25,17 @@ insert into public.roles (id, name, is_admin, permissions) values
      "attendance":"edit","dpr":"edit","requirements":"edit","site_photos":"edit",
      "material_received":"edit","rework":"edit","indents":"edit","challans":"edit",
      "transport":"edit","mtc":"edit","drawings":"view","sites":"view",
-     "team":"none","advances":"none","payroll":"none"}'::jsonb),
+     "team":"none","advances":"none","payroll":"none","attendance_register":"none"}'::jsonb),
   ('office', 'Office / Store', false, '{
      "attendance":"view","dpr":"view","requirements":"edit","site_photos":"view",
      "material_received":"edit","rework":"view","indents":"edit","challans":"edit",
      "transport":"edit","mtc":"edit","drawings":"edit","sites":"edit",
-     "team":"edit","advances":"edit","payroll":"none"}'::jsonb),
+     "team":"edit","advances":"edit","payroll":"none","attendance_register":"none"}'::jsonb),
   ('viewer', 'Viewer', false, '{
      "attendance":"view","dpr":"view","requirements":"view","site_photos":"view",
      "material_received":"view","rework":"view","indents":"view","challans":"view",
      "transport":"view","mtc":"view","drawings":"view","sites":"view",
-     "team":"view","advances":"view","payroll":"view"}'::jsonb)
+     "team":"view","advances":"view","payroll":"view","attendance_register":"view"}'::jsonb)
 on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
@@ -145,6 +145,7 @@ create table if not exists public.attendance (
   date         date not null default current_date,
   site_id      uuid not null references public.sites on delete cascade,
   present_ids  uuid[] not null default '{}',
+  present_times jsonb not null default '{}'::jsonb,
   visitors     text,
   group_photo  text,
   lat          numeric,
@@ -156,6 +157,7 @@ create table if not exists public.attendance (
   created_by   uuid references auth.users,
   unique (date, site_id)
 );
+alter table public.attendance add column if not exists present_times jsonb not null default '{}'::jsonb;
 
 create table if not exists public.dpr (
   id            uuid primary key default gen_random_uuid(),
@@ -178,6 +180,7 @@ create table if not exists public.requirements (
   site_id    uuid references public.sites on delete cascade,
   item       text not null,
   qty        text,
+  unit       text,
   priority   text default 'Medium',
   status     text default 'Open',
   raised_by  text,
@@ -185,6 +188,7 @@ create table if not exists public.requirements (
   created_at timestamptz not null default now(),
   created_by uuid references auth.users
 );
+alter table public.requirements add column if not exists unit text;
 
 create table if not exists public.indents (
   id           uuid primary key default gen_random_uuid(),
@@ -334,6 +338,39 @@ create table if not exists public.payroll_runs (
   created_by   uuid references auth.users
 );
 
+-- One row per site per month: how many working days that month had, so the
+-- Attendance Register can dock pay for days nobody marked the worker present.
+create table if not exists public.working_days (
+  id         uuid primary key default gen_random_uuid(),
+  site_id    uuid not null references public.sites on delete cascade,
+  month      text not null,          -- 'YYYY-MM'
+  total_days integer not null,
+  updated_at timestamptz not null default now(),
+  created_by uuid references auth.users,
+  unique (site_id, month)
+);
+
+-- Manual override of one worker's calculated salary for one month — a raise
+-- that took effect mid-month, a bonus, a correction. One override per worker
+-- per month, editable from either the Attendance Register or Payroll; the
+-- override wins over whatever the attendance/wage math would otherwise give.
+create table if not exists public.salary_adjustments (
+  id          uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees on delete cascade,
+  month       text not null,          -- 'YYYY-MM'
+  amount      numeric not null,
+  note        text,
+  updated_at  timestamptz not null default now(),
+  created_by  uuid references auth.users,
+  unique (employee_id, month)
+);
+-- Upgrade path: an earlier version of this schema scoped the override to a
+-- site (site_id not null, unique on site_id+employee_id+month). Reconcile
+-- that shape into the current one — no-op on a fresh install.
+alter table public.salary_adjustments drop column if exists site_id cascade;
+alter table public.salary_adjustments drop constraint if exists salary_adjustments_employee_id_month_key;
+alter table public.salary_adjustments add constraint salary_adjustments_employee_id_month_key unique (employee_id, month);
+
 -- ---------------------------------------------------------------------------
 -- 8. DOCUMENT NUMBERING  (gap-free, survives deletions — unlike counting rows)
 -- ---------------------------------------------------------------------------
@@ -364,6 +401,8 @@ create index if not exists idx_requirements_status on public.requirements (statu
 create index if not exists idx_indents_status on public.indents (status);
 create index if not exists idx_advances_date on public.advances (date desc);
 create index if not exists idx_employees_site on public.employees (site_id);
+create index if not exists idx_working_days_site_month on public.working_days (site_id, month);
+create index if not exists idx_salary_adjustments_month on public.salary_adjustments (month);
 
 -- ---------------------------------------------------------------------------
 -- 10. ROW LEVEL SECURITY
@@ -380,7 +419,7 @@ begin
       ('material_received','material_received'), ('site_photos','site_photos'),
       ('challans','challans'), ('transport','transport'), ('mtc','mtc'),
       ('drawings','drawings'), ('rework','rework'), ('advances','advances'),
-      ('payroll_runs','payroll')
+      ('payroll_runs','payroll'), ('working_days','attendance_register')
     ) as x(tbl, module)
   loop
     execute format('alter table public.%I enable row level security', t.tbl);
@@ -405,6 +444,24 @@ begin
       t.tbl, t.module);
   end loop;
 end $$;
+
+-- Salary adjustments: editable from either Payroll or the Attendance Register,
+-- so either permission (respecting that screen's own freeze) is enough to write.
+alter table public.salary_adjustments enable row level security;
+-- Upgrade path: drop the policies an earlier version of this schema created
+-- for this table via the generic per-module loop above.
+drop policy if exists read_all on public.salary_adjustments;
+drop policy if exists write_ins on public.salary_adjustments;
+drop policy if exists write_upd on public.salary_adjustments;
+drop policy if exists write_del on public.salary_adjustments;
+drop policy if exists salary_adj_read on public.salary_adjustments;
+create policy salary_adj_read on public.salary_adjustments
+  for select to authenticated using (true);
+drop policy if exists salary_adj_write on public.salary_adjustments;
+create policy salary_adj_write on public.salary_adjustments
+  for all to authenticated
+  using (public.can_edit('payroll') or public.can_edit('attendance_register'))
+  with check (public.can_edit('payroll') or public.can_edit('attendance_register'));
 
 -- Profiles: everyone signed in can read the staff list (needed to show names);
 -- you may edit your own name/phone; only Admin may change roles or delete.
@@ -473,7 +530,8 @@ begin
   foreach t in array array[
     'sites','employees','attendance','dpr','requirements','indents',
     'material_received','site_photos','challans','transport','mtc',
-    'drawings','rework','advances','payroll_runs','profiles','module_locks'
+    'drawings','rework','advances','payroll_runs','working_days','salary_adjustments',
+    'profiles','module_locks'
   ] loop
     begin
       execute format('alter publication supabase_realtime add table public.%I', t);

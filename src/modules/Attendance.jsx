@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { MapPin, Navigation, Loader2, Check, Users2 } from 'lucide-react';
+import { MapPin, Navigation, Loader2, Check, Users2, Pencil } from 'lucide-react';
 import { THEME } from '../lib/theme';
 import { today, fmtDate } from '../lib/format';
 import { getPosition, mapsLink } from '../lib/geo';
@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { moduleByKey } from '../config/modules';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, Field,
-  Input, TextArea, SiteSelect, PhotoInput, Lightbox, DeleteBtn,
+  Input, TextArea, SiteSelect, PhotoInput, Lightbox, DeleteBtn, IconBtn,
   ExportButton, FormShell, Banner,
 } from '../components/ui';
 
@@ -24,9 +24,10 @@ const MODULE = moduleByKey('attendance');
 export default function Attendance() {
   const { activeSites, activeEmployees, sites, siteName, siteFilter } = useAppData();
   const { canEdit, locks, profile } = useAuth();
-  const { rows, loading, add, remove } = useRecords('attendance', { orderBy: 'date' });
+  const { rows, loading, add, update, remove } = useRecords('attendance', { orderBy: 'date' });
 
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [locating, setLocating] = useState(false);
@@ -36,6 +37,7 @@ export default function Attendance() {
     date: today(),
     site_id: siteFilter || '',
     present_ids: [],
+    present_times: {},
     visitors: '',
     group_photo: [],
     lat: null, lng: null, accuracy_m: null,
@@ -44,6 +46,37 @@ export default function Attendance() {
   };
   const [form, setForm] = useState(blank);
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+
+  function openNew() {
+    setEditingId(null);
+    setForm(blank);
+    setError(null);
+    setOpen(true);
+  }
+
+  function openEdit(record) {
+    setEditingId(record.id);
+    setForm({
+      date: record.date,
+      site_id: record.site_id,
+      present_ids: record.present_ids ?? [],
+      present_times: record.present_times ?? {},
+      visitors: record.visitors ?? '',
+      group_photo: record.group_photo ? [record.group_photo] : [],
+      lat: record.lat, lng: record.lng, accuracy_m: record.accuracy_m,
+      marked_by: record.marked_by ?? '',
+      note: record.note ?? '',
+    });
+    setError(null);
+    setOpen(true);
+  }
+
+  function closeForm() {
+    setOpen(false);
+    setEditingId(null);
+    setForm({ ...blank, site_id: form.site_id });
+    setError(null);
+  }
 
   const editable = canEdit('attendance');
   const locked = !!locks.attendance;
@@ -65,7 +98,14 @@ export default function Attendance() {
       present_ids: p.present_ids.includes(id)
         ? p.present_ids.filter((x) => x !== id)
         : [...p.present_ids, id],
+      present_times: p.present_ids.includes(id)
+        ? p.present_times
+        : { ...p.present_times, [id]: p.present_times[id] ?? '09:00' },
     }));
+  }
+
+  function setWorkerTime(id, value) {
+    setForm((p) => ({ ...p, present_times: { ...p.present_times, [id]: value } }));
   }
 
   async function grabLocation() {
@@ -90,19 +130,23 @@ export default function Attendance() {
     }
     setSaving(true);
     setError(null);
+    const payload = {
+      date: form.date,
+      site_id: form.site_id,
+      present_ids: form.present_ids,
+      present_times: Object.fromEntries(
+        form.present_ids.map((id) => [id, form.present_times[id] || '09:00'])
+      ),
+      visitors: form.visitors || null,
+      group_photo: form.group_photo[0] ?? null,
+      lat: form.lat, lng: form.lng, accuracy_m: form.accuracy_m,
+      marked_by: form.marked_by || null,
+      note: form.note || null,
+    };
     try {
-      await add({
-        date: form.date,
-        site_id: form.site_id,
-        present_ids: form.present_ids,
-        visitors: form.visitors || null,
-        group_photo: form.group_photo[0] ?? null,
-        lat: form.lat, lng: form.lng, accuracy_m: form.accuracy_m,
-        marked_by: form.marked_by || null,
-        note: form.note || null,
-      });
-      setForm({ ...blank, site_id: form.site_id });
-      setOpen(false);
+      if (editingId) await update(editingId, payload);
+      else await add(payload);
+      closeForm();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -142,9 +186,9 @@ export default function Attendance() {
 
       <FormShell
         open={open}
-        onToggle={() => { setOpen((o) => !o); setError(null); }}
+        onToggle={open ? closeForm : openNew}
         accent={MODULE.accent}
-        label="Mark Today's Attendance"
+        label={editingId ? 'Edit Attendance' : "Mark Today's Attendance"}
         onSubmit={submit}
         saving={saving}
         error={error}
@@ -174,7 +218,11 @@ export default function Attendance() {
             <>
               <div className="flex gap-2 mb-2">
                 <button type="button" className="text-xs font-semibold" style={{ color: MODULE.accent }}
-                  onClick={() => set('present_ids', roster.map((r) => r.id))}>
+                  onClick={() => setForm((p) => ({
+                    ...p,
+                    present_ids: roster.map((r) => r.id),
+                    present_times: Object.fromEntries(roster.map((r) => [r.id, p.present_times[r.id] ?? '09:00'])),
+                  }))}>
                   Select all
                 </button>
                 <span style={{ color: THEME.textDim }}>·</span>
@@ -187,34 +235,44 @@ export default function Attendance() {
                 {roster.map((emp) => {
                   const on = form.present_ids.includes(emp.id);
                   return (
-                    <button
-                      type="button"
-                      key={emp.id}
-                      onClick={() => toggleWorker(emp.id)}
-                      className="flex items-center gap-2.5 px-3 py-3 rounded-lg text-sm text-left"
-                      style={{
-                        background: on ? 'rgba(255,106,19,0.12)' : THEME.panel2,
-                        border: `1px solid ${on ? MODULE.accent : THEME.border}`,
-                        color: THEME.text,
-                      }}
-                    >
-                      <span
-                        className="flex items-center justify-center rounded shrink-0"
+                    <div key={emp.id} className="flex items-stretch gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => toggleWorker(emp.id)}
+                        className="flex-1 min-w-0 flex items-center gap-2.5 px-3 py-3 rounded-lg text-sm text-left"
                         style={{
-                          width: 20, height: 20,
-                          background: on ? MODULE.accent : 'transparent',
+                          background: on ? 'rgba(255,106,19,0.12)' : THEME.panel2,
                           border: `1px solid ${on ? MODULE.accent : THEME.border}`,
+                          color: THEME.text,
                         }}
                       >
-                        {on && <Check size={13} color="#111" strokeWidth={3} />}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block truncate">{emp.name}</span>
-                        {emp.trade && (
-                          <span className="block text-[11px]" style={{ color: THEME.textDim }}>{emp.trade}</span>
-                        )}
-                      </span>
-                    </button>
+                        <span
+                          className="flex items-center justify-center rounded shrink-0"
+                          style={{
+                            width: 20, height: 20,
+                            background: on ? MODULE.accent : 'transparent',
+                            border: `1px solid ${on ? MODULE.accent : THEME.border}`,
+                          }}
+                        >
+                          {on && <Check size={13} color="#111" strokeWidth={3} />}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block truncate">{emp.name}</span>
+                          {emp.trade && (
+                            <span className="block text-[11px]" style={{ color: THEME.textDim }}>{emp.trade}</span>
+                          )}
+                        </span>
+                      </button>
+                      {on && (
+                        <input
+                          type="time"
+                          value={form.present_times[emp.id] ?? '09:00'}
+                          onChange={(e) => setWorkerTime(emp.id, e.target.value)}
+                          className="shrink-0 bg-transparent border rounded-lg px-2 text-xs outline-none"
+                          style={{ width: 92, borderColor: THEME.border, color: THEME.text }}
+                        />
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -308,7 +366,12 @@ export default function Attendance() {
                     </div>
                   </div>
                 </div>
-                {editable && !locked && <DeleteBtn onDelete={() => remove(r.id).catch((e) => setError(e.message))} />}
+                {editable && !locked && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <IconBtn icon={Pencil} title="Edit this entry" onClick={() => openEdit(r)} />
+                    <DeleteBtn onDelete={() => remove(r.id).catch((e) => setError(e.message))} />
+                  </div>
+                )}
               </div>
 
               <div className="text-xs mt-3 leading-relaxed" style={{ color: THEME.text }}>
@@ -330,7 +393,12 @@ export default function Attendance() {
 
 function namesOf(record, employees) {
   return (record.present_ids ?? [])
-    .map((id) => employees.find((e) => e.id === id)?.name)
+    .map((id) => {
+      const name = employees.find((e) => e.id === id)?.name;
+      if (!name) return null;
+      const time = record.present_times?.[id];
+      return time && time !== '09:00' ? `${name} (${time})` : name;
+    })
     .filter(Boolean)
     .join(', ');
 }
