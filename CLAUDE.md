@@ -39,13 +39,15 @@ against a real Supabase project — without it, auth and all data calls fail.
 **Two component paths per module:**
 - *Config-driven modules* render through `RecordManager.jsx`, a single generic
   component that takes `fields`/`columns` from `fields.js` and handles the
-  form, live list (mobile cards / desktop table), delete, and CSV export.
-  These are wired up as inline `<Route>` elements directly in `App.jsx`.
-- *Bespoke modules* (Attendance, Indents, Challans, Payroll, Sites, Team,
-  Admin, Dashboard) have their own component in `src/modules/` because they
-  need workflow beyond "log a record" (e.g. Indents/Challans auto-number
-  `IND-0001-2026` / `DC-0001-2026`; Payroll computes and snapshots; Attendance
-  captures a group photo + GPS muster).
+  form, live list (mobile cards / desktop table), add/delete, and CSV export.
+  `RecordManager` itself has no edit path — only bespoke modules do. These are
+  wired up as inline `<Route>` elements directly in `App.jsx`.
+- *Bespoke modules* (Attendance, Indents, Challans, Payroll, AttendanceRegister,
+  Sites, Team, Admin, Dashboard) have their own component in `src/modules/`
+  because they need workflow beyond "log a record" (e.g. Indents/Challans
+  auto-number `IND-0001-2026` / `DC-0001-2026`; Payroll computes and snapshots;
+  Attendance captures a group photo + GPS muster and supports edit-in-place;
+  AttendanceRegister computes per-worker pay from attendance vs. working days).
 
 **Data layer:**
 - `src/lib/supabase.js` is the single Supabase client instance.
@@ -63,6 +65,9 @@ against a real Supabase project — without it, auth and all data calls fail.
   month payroll). It exposes `canView(key)`/`canEdit(key)`, kept live via
   Realtime so a permission or freeze change from Admin Control applies to
   already-open tabs without a reload.
+- `Modal` in `src/components/ui.jsx` is the generic popup (backdrop click or
+  the X to close) — used for the Attendance Register / Payroll salary
+  breakdown-and-edit popups. `Lightbox` is a separate, photo-only viewer.
 
 **Authorization is enforced twice, deliberately:** `AuthContext`/`modules.js`
 gate what the UI shows, but the real enforcement is Postgres Row Level
@@ -73,7 +78,26 @@ permissions, both layers matter, but if they disagree, the database wins.
 **Database:** `supabase/schema.sql` is the entire schema as one file (tables,
 RLS policies, the photo storage bucket, Realtime publication) — there is no
 migration tooling, it's applied by hand in the Supabase SQL editor. When
-adding a table, also add it to the RLS loop at the bottom of that file.
+adding a table, also add it to the RLS loop at the bottom of that file (or a
+dedicated policy block, if its write access doesn't map to a single
+permission key — see `salary_adjustments` below).
+
+`create table if not exists` is a no-op once a table exists on a live
+project, so changing an *existing* table's columns/constraints (not just
+adding a new table) needs an explicit `alter table` alongside it — see
+`present_times` on `attendance` or `unit` on `requirements` for the
+add-a-column pattern, and the `salary_adjustments` block for reconciling a
+column/constraint that changed shape after it had already shipped. Since
+this file is meant to be safe to re-paste in full, always write these as
+`if exists`/`if not exists` (or drop-then-recreate for constraints/policies,
+which can't take `if not exists`), not one-off migrations.
+
+**Cross-module permission**: most tables map to exactly one permission key
+via the generic RLS loop. `salary_adjustments` (one manual salary override
+per worker per month, used by both Payroll and the Attendance Register) is
+the exception — it's excluded from that loop and given its own policy that
+allows the write if the user has edit rights on *either* `payroll` or
+`attendance_register`, since either screen can create the override.
 
 ## Adding a new module
 
@@ -87,8 +111,10 @@ adding a table, also add it to the RLS loop at the bottom of that file.
 
 - No offline mode — a site with no signal can't submit; nothing is lost, the
   form just stays on screen for retry.
-- Records can't be edited after saving (only status dropdowns on indents) —
-  delete and re-enter is the intended flow.
+- `RecordManager`-based logs (DPR, Requirements, Material Received, etc.)
+  can't be edited after saving (only status dropdowns on indents) — delete
+  and re-enter is the intended flow. Attendance is the one bespoke module
+  that *does* support editing an existing entry, deliberately.
 - New user logins are created directly in the Supabase dashboard, not in-app,
   to avoid needing a server component.
 - Deleting a site deletes its history; the "Close" button (hide from
