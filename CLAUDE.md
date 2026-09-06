@@ -42,12 +42,15 @@ against a real Supabase project — without it, auth and all data calls fail.
   form, live list (mobile cards / desktop table), add/delete, and CSV export.
   `RecordManager` itself has no edit path — only bespoke modules do. These are
   wired up as inline `<Route>` elements directly in `App.jsx`.
-- *Bespoke modules* (Attendance, Indents, Challans, Payroll, AttendanceRegister,
-  Sites, Team, Admin, Dashboard) have their own component in `src/modules/`
-  because they need workflow beyond "log a record" (e.g. Indents/Challans
-  auto-number `IND-0001-2026` / `DC-0001-2026`; Payroll computes and snapshots;
-  Attendance captures a group photo + GPS muster and supports edit-in-place;
-  AttendanceRegister computes per-worker pay from attendance vs. working days).
+- *Bespoke modules* (Attendance, Indents, Challans, AttendanceRegister, Sites,
+  Team, Admin, Dashboard) have their own component in `src/modules/` because
+  they need workflow beyond "log a record" (e.g. Indents/Challans auto-number
+  `IND-0001-2026` / `DC-0001-2026`; Attendance captures a group photo + GPS
+  muster and supports edit-in-place; AttendanceRegister computes per-worker
+  pay from attendance vs. working days). `Team` is the worker roster *and*
+  payroll (computes and snapshots monthly salary) on one screen, gated by a
+  single `team` permission — they used to be separate tabs/permissions but
+  were merged since payroll has no reason to be visible without the roster.
 
 **Data layer:**
 - `src/lib/supabase.js` is the single Supabase client instance.
@@ -94,10 +97,14 @@ which can't take `if not exists`), not one-off migrations.
 
 **Cross-module permission**: most tables map to exactly one permission key
 via the generic RLS loop. `salary_adjustments` (one manual salary override
-per worker per month, used by both Payroll and the Attendance Register) is
-the exception — it's excluded from that loop and given its own policy that
-allows the write if the user has edit rights on *either* `payroll` or
-`attendance_register`, since either screen can create the override.
+per worker per month, used by both Team's payroll section and the Attendance
+Register) is the exception — it's excluded from that loop and given its own
+policy that allows the write if the user has edit rights on *either* `team`
+or `attendance_register`, since either screen can create the override. The
+override is a full-month target (e.g. a raise effective mid-month); the
+Attendance Register prorates it by working days elapsed instead of showing
+the whole target amount before the month is over — don't let it collapse
+back to a flat pass-through of `salary_adjustments.amount`.
 
 ## Adding a new module
 

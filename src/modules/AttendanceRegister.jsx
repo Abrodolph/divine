@@ -141,8 +141,16 @@ export default function AttendanceRegister() {
       .filter((a) => a.employee_id === emp.id)
       .reduce((s, a) => s + (Number(a.amount) || 0), 0);
 
+    // An override is a full-month target salary (e.g. a raise that took effect
+    // mid-month) — prorate it by days elapsed the same way the calculated
+    // payable is prorated, rather than paying the whole target amount before
+    // the month is over.
     const override = adjustments.find((a) => a.employee_id === emp.id) ?? null;
-    const finalPayable = override ? Number(override.amount) : payable;
+    const effectiveDays = totalDays > 0 ? Math.min(daysPresent, workingDaysElapsed) : null;
+    const overridePayable = override
+      ? (totalDays > 0 ? (Number(override.amount) / totalDays) * effectiveDays : Number(override.amount))
+      : null;
+    const finalPayable = override ? overridePayable : payable;
 
     return {
       employee_id: emp.id, name: emp.name, trade: emp.trade,
@@ -377,7 +385,8 @@ function Breakdown({ row, month, totalDays, workingDaysElapsed, asOf, editable, 
   const [note, setNote] = useState('');
 
   function startEdit() {
-    setAmount(row.finalPayable != null ? String(row.finalPayable) : '');
+    const current = row.override ? row.override.amount : row.fullPay;
+    setAmount(current != null ? String(current) : '');
     setNote(row.override?.note ?? '');
     setEditing(true);
   }
@@ -429,7 +438,8 @@ function Breakdown({ row, month, totalDays, workingDaysElapsed, asOf, editable, 
       >
         {editing ? (
           <form onSubmit={submit} className="space-y-3">
-            <Field label="Final salary (₹)" required>
+            <Field label="Full-month target salary (₹)" required
+              hint="What this worker's total salary for the month should be — e.g. a raise effective mid-month. It's prorated by days elapsed, same as the calculated figure, so 'Payable' below still reflects only what's due so far.">
               <Input type="number" step="0.01" autoFocus required
                 value={amount} onChange={(e) => setAmount(e.target.value)} />
             </Field>
@@ -443,8 +453,11 @@ function Breakdown({ row, month, totalDays, workingDaysElapsed, asOf, editable, 
           </form>
         ) : (
           <>
+            {row.override && (
+              <Line label="Full-month target (edited)" value={inr(row.override.amount)} tone="amber" />
+            )}
             <Line
-              label={row.override ? 'Final salary (edited)' : 'Final salary'}
+              label={row.override ? `Payable as of ${fmtDate(asOf)}` : 'Final salary'}
               value={row.finalPayable != null ? inr(row.finalPayable) : '—'}
               tone="green" bold
             />

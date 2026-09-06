@@ -16,8 +16,10 @@ create table if not exists public.roles (
 
 -- Module keys used everywhere in the app and in the permission maps:
 --   attendance, dpr, requirements, indents, material_received, site_photos,
---   challans, transport, mtc, drawings, rework, sites, team, advances, payroll
+--   challans, transport, mtc, drawings, rework, sites, team, advances,
+--   attendance_register
 -- Values: 'none' | 'view' | 'edit'
+-- 'team' covers both the worker roster and payroll (they're one screen).
 
 insert into public.roles (id, name, is_admin, permissions) values
   ('admin', 'Admin', true, '{}'::jsonb),
@@ -25,18 +27,34 @@ insert into public.roles (id, name, is_admin, permissions) values
      "attendance":"edit","dpr":"edit","requirements":"edit","site_photos":"edit",
      "material_received":"edit","rework":"edit","indents":"edit","challans":"edit",
      "transport":"edit","mtc":"edit","drawings":"view","sites":"view",
-     "team":"none","advances":"none","payroll":"none","attendance_register":"none"}'::jsonb),
+     "team":"none","advances":"none","attendance_register":"none"}'::jsonb),
   ('office', 'Office / Store', false, '{
      "attendance":"view","dpr":"view","requirements":"edit","site_photos":"view",
      "material_received":"edit","rework":"view","indents":"edit","challans":"edit",
      "transport":"edit","mtc":"edit","drawings":"edit","sites":"edit",
-     "team":"edit","advances":"edit","payroll":"none","attendance_register":"none"}'::jsonb),
+     "team":"edit","advances":"edit","attendance_register":"none"}'::jsonb),
   ('viewer', 'Viewer', false, '{
      "attendance":"view","dpr":"view","requirements":"view","site_photos":"view",
      "material_received":"view","rework":"view","indents":"view","challans":"view",
      "transport":"view","mtc":"view","drawings":"view","sites":"view",
-     "team":"view","advances":"view","payroll":"view","attendance_register":"view"}'::jsonb)
+     "team":"view","advances":"view","attendance_register":"view"}'::jsonb)
 on conflict (id) do nothing;
+
+-- Upgrade path: Payroll used to be its own permission key, gating its own
+-- tab. It's now folded into the Team tab and shares the "team" key, so any
+-- existing role's "payroll" permission is merged into "team" (edit beats
+-- view beats none) and the now-unused key is dropped. No-op on a fresh
+-- install, and a no-op on repeat runs once the key is gone.
+update public.roles
+set permissions = (permissions - 'payroll') || jsonb_build_object(
+  'team',
+  case
+    when coalesce(permissions->>'team', 'none') = 'edit' or coalesce(permissions->>'payroll', 'none') = 'edit' then 'edit'
+    when coalesce(permissions->>'team', 'none') = 'view' or coalesce(permissions->>'payroll', 'none') = 'view' then 'view'
+    else 'none'
+  end
+)
+where permissions ? 'payroll';
 
 -- ---------------------------------------------------------------------------
 -- 2. PROFILES  (one row per login, auto-created on signup)
@@ -81,6 +99,13 @@ create table if not exists public.module_locks (
   module text primary key,
   locked boolean not null default false
 );
+
+-- Upgrade path: fold a frozen "payroll" section (now part of the Team tab)
+-- into "team". No-op on a fresh install, and a no-op once "payroll" is gone.
+insert into public.module_locks (module, locked)
+select 'team', true from public.module_locks where module = 'payroll' and locked
+on conflict (module) do update set locked = true;
+delete from public.module_locks where module = 'payroll';
 
 -- ---------------------------------------------------------------------------
 -- 4. PERMISSION HELPERS  (used by every Row Level Security policy below)
@@ -130,10 +155,12 @@ create table if not exists public.employees (
   wage_type  text not null default 'Daily',   -- Daily | Monthly
   wage_rate  numeric not null default 0,
   phone      text,
+  aadhaar    text,
   active     boolean not null default true,
   created_at timestamptz not null default now(),
   created_by uuid references auth.users
 );
+alter table public.employees add column if not exists aadhaar text;
 
 -- ---------------------------------------------------------------------------
 -- 6. SITE MODULES
@@ -352,8 +379,10 @@ create table if not exists public.working_days (
 
 -- Manual override of one worker's calculated salary for one month — a raise
 -- that took effect mid-month, a bonus, a correction. One override per worker
--- per month, editable from either the Attendance Register or Payroll; the
--- override wins over whatever the attendance/wage math would otherwise give.
+-- per month, editable from either the Attendance Register or the Team tab's
+-- payroll section; the override is a full-month target and wins over
+-- whatever the attendance/wage math would otherwise give (the Attendance
+-- Register prorates it by days elapsed, same as the calculated figure).
 create table if not exists public.salary_adjustments (
   id          uuid primary key default gen_random_uuid(),
   employee_id uuid not null references public.employees on delete cascade,
@@ -419,7 +448,7 @@ begin
       ('material_received','material_received'), ('site_photos','site_photos'),
       ('challans','challans'), ('transport','transport'), ('mtc','mtc'),
       ('drawings','drawings'), ('rework','rework'), ('advances','advances'),
-      ('payroll_runs','payroll'), ('working_days','attendance_register')
+      ('payroll_runs','team'), ('working_days','attendance_register')
     ) as x(tbl, module)
   loop
     execute format('alter table public.%I enable row level security', t.tbl);
@@ -445,8 +474,9 @@ begin
   end loop;
 end $$;
 
--- Salary adjustments: editable from either Payroll or the Attendance Register,
--- so either permission (respecting that screen's own freeze) is enough to write.
+-- Salary adjustments: editable from either Team (payroll) or the Attendance
+-- Register, so either permission (respecting that screen's own freeze) is
+-- enough to write.
 alter table public.salary_adjustments enable row level security;
 -- Upgrade path: drop the policies an earlier version of this schema created
 -- for this table via the generic per-module loop above.
@@ -460,8 +490,8 @@ create policy salary_adj_read on public.salary_adjustments
 drop policy if exists salary_adj_write on public.salary_adjustments;
 create policy salary_adj_write on public.salary_adjustments
   for all to authenticated
-  using (public.can_edit('payroll') or public.can_edit('attendance_register'))
-  with check (public.can_edit('payroll') or public.can_edit('attendance_register'));
+  using (public.can_edit('team') or public.can_edit('attendance_register'))
+  with check (public.can_edit('team') or public.can_edit('attendance_register'));
 
 -- Profiles: everyone signed in can read the staff list (needed to show names);
 -- you may edit your own name/phone; only Admin may change roles or delete.
