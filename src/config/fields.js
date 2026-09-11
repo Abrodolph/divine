@@ -79,12 +79,29 @@ export const DPR = {
   ],
 };
 
+/**
+ * Common material catalog, from the site's requirement register
+ * (public/SITE REQUIREMENT TAB.xlsx) — offered as quick-pick suggestions on
+ * the requirement's "what is needed" field. Typing anything else is still
+ * allowed; this is a shortlist, not a restriction.
+ */
+export const SITE_REQUIREMENT_ITEMS = [
+  ...['300', '250', '200', '150', '100', '80', '65', '50', '40', '32', '25'].map((s) => `M.S PIPE ${s}MM`),
+  ...['300', '250', '200', '150', '100', '80', '65', '50', '40', '32', '25'].map((s) => `G.I PIPE ${s}MM`),
+  ...['200', '150', '100', '80', '65', '50', '40', '32', '25'].map((s) => `BUTTERFLY VALVE ${s}MM`),
+  ...['200', '150', '100', '80', '65', '50', '40', '32', '25'].map((s) => `NON RETURN VALVE (NRV) ${s}MM`),
+  ...['50', '40', '32', '25'].map((s) => `BALL VALVE ${s}MM`),
+  ...['4', '2'].map((s) => `WRAPPING COATING ${s}MM`),
+  'M.S ANGLE 40x40x5', 'M.S ANGLE 40x40x6', 'M.S ANGLE 50x50x5', 'M.S ANGLE 50x50x6', 'M.S ANGLE 75x75x6',
+  'M.S CHANNEL 75x40', 'M.S CHANNEL 100x50', 'M.S CHANNEL 125x65', 'M.S CHANNEL 150x75',
+];
+
 export const REQUIREMENTS = {
   fields: [
     { key: 'date', label: 'Date', type: 'date', default: today },
     { key: 'site_id', label: 'Site', type: 'site', required: true },
-    { key: 'item', label: 'What is needed', type: 'text', required: true,
-      placeholder: 'e.g. 2" GI pipe, elbows, welding rods' },
+    { key: 'item', label: 'What is needed', type: 'combo', options: SITE_REQUIREMENT_ITEMS, required: true,
+      placeholder: 'Pick from the list, or type your own' },
     { key: 'qty', label: 'Quantity', type: 'number', placeholder: 'e.g. 30' },
     { key: 'unit', label: 'Unit', type: 'select', options: UNITS },
     { key: 'priority', label: 'Priority', type: 'select', options: ['Low', 'Medium', 'High', 'Urgent'], default: 'Medium' },

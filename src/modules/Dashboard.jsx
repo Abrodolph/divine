@@ -23,11 +23,10 @@ export default function Dashboard() {
     (async () => {
       const d = today();
       const monthStart = `${thisMonth()}-01`;
-      const [att, dpr, reqs, indents, rework, photos, advances] = await Promise.all([
+      const [att, dpr, reqs, rework, photos, advances] = await Promise.all([
         supabase.from('attendance').select('site_id,present_ids,date,created_at').eq('date', d),
         supabase.from('dpr').select('id,site_id,date,work_done,created_at').order('date', { ascending: false }).limit(5),
         supabase.from('requirements').select('id,item,status,priority,site_id,date').neq('status', 'Fulfilled').order('date', { ascending: false }).limit(6),
-        supabase.from('indents').select('id,doc_no,status,site_id,date').eq('status', 'Pending'),
         supabase.from('rework').select('id,issue,status,site_id,date').neq('status', 'Closed').order('date', { ascending: false }).limit(6),
         supabase.from('site_photos').select('id,site_id,date,photos,created_at').order('created_at', { ascending: false }).limit(6),
         supabase.from('advances').select('amount,date').gte('date', monthStart),
@@ -37,7 +36,6 @@ export default function Dashboard() {
         attendance: att.data ?? [],
         dpr: dpr.data ?? [],
         requirements: reqs.data ?? [],
-        indents: indents.data ?? [],
         rework: rework.data ?? [],
         photos: photos.data ?? [],
         advances: advances.data ?? [],
@@ -59,7 +57,6 @@ export default function Dashboard() {
   const tiles = [
     { key: 'attendance', label: 'On site today', value: headcount },
     { key: 'requirements', label: 'Open requirements', value: filt(state.requirements).length },
-    { key: 'indents', label: 'Pending indents', value: filt(state.indents).length },
     { key: 'rework', label: 'Open rework', value: filt(state.rework).length },
     { key: 'team', label: 'Workers on roll', value: employees.filter((e) => e.active !== false).length },
     { key: 'advances', label: 'Advances this month', value: inr(advanceTotal), small: true },

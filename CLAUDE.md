@@ -42,10 +42,10 @@ against a real Supabase project — without it, auth and all data calls fail.
   form, live list (mobile cards / desktop table), add/delete, and CSV export.
   `RecordManager` itself has no edit path — only bespoke modules do. These are
   wired up as inline `<Route>` elements directly in `App.jsx`.
-- *Bespoke modules* (Attendance, Indents, Challans, AttendanceRegister, Sites,
+- *Bespoke modules* (Attendance, Challans, AttendanceRegister, Sites,
   Team, Admin, Dashboard) have their own component in `src/modules/` because
-  they need workflow beyond "log a record" (e.g. Indents/Challans auto-number
-  `IND-0001-2026` / `DC-0001-2026`; Attendance captures a group photo + GPS
+  they need workflow beyond "log a record" (e.g. Challans auto-number
+  `DC-0001-2026`; Attendance captures a group photo + GPS
   muster and supports edit-in-place; AttendanceRegister computes per-worker
   pay from attendance vs. working days). `Team` is the worker roster *and*
   payroll (computes and snapshots monthly salary) on one screen, gated by a
@@ -119,9 +119,9 @@ back to a flat pass-through of `salary_adjustments.amount`.
 - No offline mode — a site with no signal can't submit; nothing is lost, the
   form just stays on screen for retry.
 - `RecordManager`-based logs (DPR, Requirements, Material Received, etc.)
-  can't be edited after saving (only status dropdowns on indents) — delete
-  and re-enter is the intended flow. Attendance is the one bespoke module
-  that *does* support editing an existing entry, deliberately.
+  can't be edited after saving — delete and re-enter is the intended flow.
+  Attendance is the one bespoke module that *does* support editing an
+  existing entry, deliberately.
 - New user logins are created directly in the Supabase dashboard, not in-app,
   to avoid needing a server component.
 - Deleting a site deletes its history; the "Close" button (hide from

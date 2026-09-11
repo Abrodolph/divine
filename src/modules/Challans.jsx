@@ -22,7 +22,7 @@ export default function Challans() {
   const { rows, loading, add, remove } = useRecords('challans', { orderBy: 'date' });
 
   const blank = {
-    date: today(), site_id: siteFilter || '', party: '', party_address: '',
+    date: today(), site_id: siteFilter || '', party: '', party_address: '', party_gstin: '', po_no: '',
     vehicle_no: '', transporter_name: '', driver_name: '', driver_phone: '', remarks: '',
   };
   const [form, setForm] = useState(blank);
@@ -68,6 +68,8 @@ export default function Challans() {
     { key: 'date', label: 'Date' },
     { key: 'site_id', label: 'Dispatch From', value: (r) => siteName(r.site_id) },
     { key: 'party', label: 'Consignee' },
+    { key: 'party_gstin', label: 'Consignee GSTIN' },
+    { key: 'po_no', label: 'PO / Ref No.' },
     { key: 'vehicle_no', label: 'Vehicle No.' },
     { key: 'transporter_name', label: 'Transporter' },
     { key: 'driver_name', label: 'Driver' },
@@ -108,6 +110,12 @@ export default function Challans() {
         </Field>
         <Field label="Consignee address" full>
           <TextArea rows={2} value={form.party_address} onChange={(e) => set('party_address', e.target.value)} />
+        </Field>
+        <Field label="Consignee GSTIN">
+          <Input value={form.party_gstin} onChange={(e) => set('party_gstin', e.target.value.toUpperCase())} placeholder="e.g. 27ABCDE1234F1Z5" />
+        </Field>
+        <Field label="PO / reference no." hint="Client's purchase order or reference, if any.">
+          <Input value={form.po_no} onChange={(e) => set('po_no', e.target.value)} />
         </Field>
         <Field label="Vehicle no.">
           <Input value={form.vehicle_no} onChange={(e) => set('vehicle_no', e.target.value)} />
@@ -191,14 +199,16 @@ function ChallanPrint({ record, siteName }) {
         <div className="text-right shrink-0">
           <div className="text-base sm:text-lg font-bold">DELIVERY CHALLAN</div>
           <div className="text-sm font-mono">{record.doc_no}</div>
+          <div className="text-xs mt-1"><b>Date:</b> {fmtDate(record.date)}</div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-sm mb-4">
-        <div><b>Date:</b> {fmtDate(record.date)}</div>
-        <div><b>Vehicle No.:</b> {record.vehicle_no || '—'}</div>
         <div><b>Dispatch From:</b> {siteName(record.site_id)}</div>
+        <div><b>PO / Ref No.:</b> {record.po_no || '—'}</div>
         <div><b>Consignee:</b> {record.party || '—'}</div>
+        <div><b>Consignee GSTIN:</b> {record.party_gstin || '—'}</div>
+        <div><b>Vehicle No.:</b> {record.vehicle_no || '—'}</div>
         <div><b>Transporter:</b> {record.transporter_name || '—'}</div>
         <div>
           <b>Driver:</b> {record.driver_name || '—'}

@@ -1,5 +1,5 @@
 import {
-  Home, Users2, FileText, ClipboardList, Package, Camera, Images,
+  Home, Users2, FileText, ClipboardList, Camera, Images,
   FileCheck2, Truck, ScrollText, PenTool, RotateCcw, Building2,
   Users, Wallet, ShieldCheck, CalendarCheck,
 } from 'lucide-react';
@@ -17,7 +17,6 @@ export const MODULES = [
   { key: 'site_photos',       label: 'Work Photos',       short: 'Photos',     icon: Images,       accent: THEME.blue,   group: 'Site' },
   { key: 'rework',            label: 'Rework Log',        short: 'Rework',     icon: RotateCcw,    accent: THEME.red,    group: 'Site' },
 
-  { key: 'indents',           label: 'Site Indent',       short: 'Indents',    icon: Package,      accent: THEME.amber,  group: 'Material' },
   { key: 'material_received', label: 'Material Received', short: 'Received',   icon: Camera,       accent: THEME.blue,   group: 'Material' },
   { key: 'challans',          label: 'Delivery Challan',  short: 'Challans',   icon: FileCheck2,   accent: THEME.green,  group: 'Material' },
   { key: 'transport',         label: 'Transport',         short: 'Transport',  icon: Truck,        accent: THEME.orange, group: 'Material' },

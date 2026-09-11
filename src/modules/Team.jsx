@@ -11,10 +11,11 @@ import { COMPANY } from '../config/company';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, Field, Input, Select,
   SiteSelect, TableWrap, Th, Td, IconBtn, DeleteBtn, ExportButton, Banner, Modal, FormShell,
+  PhotoInput,
 } from '../components/ui';
 
 const MODULE = moduleByKey('team');
-const blankWorker = { name: '', trade: '', site_id: '', wage_type: 'Daily', wage_rate: '', phone: '', aadhaar: '' };
+const blankWorker = { name: '', trade: '', site_id: '', wage_type: 'Daily', wage_rate: '', phone: '', aadhaar: '', photo: '' };
 
 /**
  * Worker master plus payroll, on one screen — they share the same data
@@ -65,6 +66,7 @@ export default function Team() {
       wage_rate: emp.wage_rate != null ? String(emp.wage_rate) : '',
       phone: emp.phone ?? '',
       aadhaar: emp.aadhaar ?? '',
+      photo: emp.photo ?? '',
     });
     setError(null);
   }
@@ -79,6 +81,7 @@ export default function Team() {
       trade: form.trade || null,
       phone: form.phone || null,
       aadhaar: form.aadhaar || null,
+      photo: form.photo || null,
       wage_rate: Number(form.wage_rate) || 0,
     };
     try {
@@ -105,6 +108,7 @@ export default function Team() {
     { key: 'wage_rate', label: 'Rate' },
     { key: 'phone', label: 'Phone' },
     { key: 'aadhaar', label: 'Aadhaar' },
+    { key: 'photo', label: 'Photo URL' },
     { key: 'active', label: 'Active', value: (r) => (r.active === false ? 'No' : 'Yes') },
   ];
 
@@ -293,18 +297,23 @@ export default function Team() {
             {employees.map((e) => (
               <Card key={e.id} className="p-3 flex justify-between items-start gap-3"
                 style={{ opacity: e.active === false ? 0.55 : 1 }}>
-                <div className="min-w-0">
-                  <div className="font-medium truncate">{e.name}</div>
-                  <div className="text-xs mt-0.5" style={{ color: THEME.textDim }}>
-                    {[e.trade, siteName(e.site_id)].filter((x) => x && x !== '—').join(' · ') || '—'}
+                <div className="flex items-start gap-3 min-w-0">
+                  {e.photo ? (
+                    <img src={e.photo} alt="" className="rounded-lg object-cover shrink-0" style={{ height: 44, width: 44 }} />
+                  ) : null}
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{e.name}</div>
+                    <div className="text-xs mt-0.5" style={{ color: THEME.textDim }}>
+                      {[e.trade, siteName(e.site_id)].filter((x) => x && x !== '—').join(' · ') || '—'}
+                    </div>
+                    <div className="text-xs mt-0.5">
+                      {inr(e.wage_rate)}{e.wage_type === 'Daily' ? '/day' : '/month'}
+                      {e.phone && <span style={{ color: THEME.textDim }}> · {e.phone}</span>}
+                    </div>
+                    {e.aadhaar && (
+                      <div className="text-xs mt-0.5" style={{ color: THEME.textDim }}>Aadhaar {e.aadhaar}</div>
+                    )}
                   </div>
-                  <div className="text-xs mt-0.5">
-                    {inr(e.wage_rate)}{e.wage_type === 'Daily' ? '/day' : '/month'}
-                    {e.phone && <span style={{ color: THEME.textDim }}> · {e.phone}</span>}
-                  </div>
-                  {e.aadhaar && (
-                    <div className="text-xs mt-0.5" style={{ color: THEME.textDim }}>Aadhaar {e.aadhaar}</div>
-                  )}
                 </div>
                 {editable && !locked && (
                   <RowActions emp={e} update={update} remove={remove} setError={setError} onEdit={startEditEmployee} />
@@ -317,13 +326,18 @@ export default function Team() {
             <TableWrap>
               <thead>
                 <tr style={{ background: THEME.panel2 }}>
-                  {['Name', 'Trade', 'Site', 'Wage', 'Rate', 'Phone', 'Aadhaar'].map((h) => <Th key={h}>{h}</Th>)}
+                  {['Photo', 'Name', 'Trade', 'Site', 'Wage', 'Rate', 'Phone', 'Aadhaar'].map((h) => <Th key={h}>{h}</Th>)}
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {employees.map((e) => (
                   <tr key={e.id} className="border-t" style={{ borderColor: THEME.border, opacity: e.active === false ? 0.55 : 1 }}>
+                    <Td>
+                      {e.photo ? (
+                        <img src={e.photo} alt="" className="rounded object-cover" style={{ height: 32, width: 32 }} />
+                      ) : '—'}
+                    </Td>
                     <Td><span className="font-medium">{e.name}</span></Td>
                     <Td>{e.trade || '—'}</Td>
                     <Td>{siteName(e.site_id)}</Td>
@@ -548,6 +562,15 @@ function WorkerFields({ form, set, activeSites }) {
           placeholder="12-digit number"
           inputMode="numeric"
           maxLength={12}
+        />
+      </Field>
+      <Field label="Passport size photo" full hint="One passport-sized photo of the worker.">
+        <PhotoInput
+          value={form.photo ? [form.photo] : []}
+          onChange={(v) => set('photo', v[0] ?? '')}
+          folder="team"
+          max={1}
+          label="Add photo"
         />
       </Field>
     </>

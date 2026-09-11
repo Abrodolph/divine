@@ -12,11 +12,11 @@ import {
 
 /**
  * Config-driven screen for the modules that are plain "log a record" lists.
- * Anything with its own workflow (attendance muster, indents, challans,
+ * Anything with its own workflow (attendance muster, delivery challans,
  * payroll) gets a bespoke component instead.
  *
  * fields:  [{ key, label, type, options?, required?, full?, default?, hint? }]
- *          type: text | number | date | textarea | select | site | photos
+ *          type: text | number | date | textarea | select | combo | site | photos
  * columns: [{ key, label, type? }]  type: date | site | status | photos
  */
 export default function RecordManager({ module, table, title, subtitle, fields, columns, filterField = 'site_id' }) {
@@ -204,6 +204,16 @@ function FieldControl({ field, value, onChange, sites, table }) {
     case 'select':
       return <Select value={v} required={field.required} options={field.options}
         onChange={(e) => onChange(e.target.value)} />;
+    case 'combo':
+      return (
+        <>
+          <Input list={`${field.key}-list`} value={v} required={field.required} placeholder={field.placeholder}
+            onChange={(e) => onChange(e.target.value)} />
+          <datalist id={`${field.key}-list`}>
+            {field.options.map((o) => <option key={o} value={o} />)}
+          </datalist>
+        </>
+      );
     case 'site':
       return <SiteSelect sites={sites} value={v} required={field.required}
         onChange={(e) => onChange(e.target.value)} />;

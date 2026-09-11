@@ -4,7 +4,7 @@ import { THEME } from '../lib/theme';
 const EMPTY = { name: '', qty: '', unit: '' };
 export const emptyItems = () => [{ ...EMPTY }];
 
-/** Repeating item rows used by Indents and Delivery Challans. */
+/** Repeating item rows used by the Delivery Challan form. */
 export default function ItemsEditor({ items, setItems, accent = THEME.orange, label = 'Materials / Items' }) {
   const update = (i, key, val) =>
     setItems(items.map((it, idx) => (idx === i ? { ...it, [key]: val } : it)));

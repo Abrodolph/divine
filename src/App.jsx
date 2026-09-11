@@ -10,7 +10,6 @@ import * as F from './config/fields';
 
 import Dashboard from './modules/Dashboard';
 import Attendance from './modules/Attendance';
-import Indents from './modules/Indents';
 import Challans from './modules/Challans';
 import SitePhotos from './modules/SitePhotos';
 import Sites from './modules/Sites';
@@ -51,13 +50,13 @@ function Shell() {
 
           {/* Modules with their own workflow */}
           <Route path="attendance" element={<Guard k="attendance"><Attendance /></Guard>} />
-          <Route path="indents" element={<Guard k="indents"><Indents /></Guard>} />
           <Route path="challans" element={<Guard k="challans"><Challans /></Guard>} />
           <Route path="site_photos" element={<Guard k="site_photos"><SitePhotos /></Guard>} />
           <Route path="sites" element={<Guard k="sites"><Sites /></Guard>} />
           <Route path="team" element={<Guard k="team"><Team /></Guard>} />
           <Route path="advances" element={<Guard k="advances"><Advances /></Guard>} />
           <Route path="payroll" element={<Navigate to="/team" replace />} />
+          <Route path="indents" element={<Navigate to="/requirements" replace />} />
           <Route path="attendance_register" element={<Guard k="attendance_register"><AttendanceRegister /></Guard>} />
 
           {/* Config-driven log modules */}
