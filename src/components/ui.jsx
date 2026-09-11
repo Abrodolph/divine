@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import { Download, Lock, Trash2, X, Loader2, Camera, Plus } from 'lucide-react';
+import { Download, Lock, Trash2, X, Loader2, Camera, Plus, FileText } from 'lucide-react';
 import { THEME } from '../lib/theme';
-import { uploadPhoto } from '../lib/upload';
+import { uploadAttachment } from '../lib/upload';
 import { exportCSV } from '../lib/csv';
+
+const isPdfUrl = (url) => /\.pdf(\?|$)/i.test(url);
 
 /* ------------------------------- chrome ---------------------------------- */
 
@@ -248,9 +250,10 @@ export function SiteSelect({ sites, ...props }) {
  * Camera-first photo picker. Uploads straight to Storage and hands back URLs,
  * so records only ever carry a short link.
  */
-export function PhotoInput({ value = [], onChange, folder = 'misc', max = 6, label = 'Add photo' }) {
+export function PhotoInput({ value = [], onChange, folder = 'misc', max = 6, label = 'Add photo', accept = 'image/*' }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const pdfAllowed = accept.includes('pdf');
 
   async function handle(e) {
     const files = [...e.target.files].slice(0, max - value.length);
@@ -260,7 +263,7 @@ export function PhotoInput({ value = [], onChange, folder = 'misc', max = 6, lab
     setErr(null);
     try {
       const urls = [];
-      for (const f of files) urls.push(await uploadPhoto(f, folder));
+      for (const f of files) urls.push(await uploadAttachment(f, folder));
       onChange([...value, ...urls]);
     } catch (e2) {
       setErr(e2.message || 'Upload failed. Check your connection and try again.');
@@ -274,18 +277,31 @@ export function PhotoInput({ value = [], onChange, folder = 'misc', max = 6, lab
       <div className="flex flex-wrap gap-2">
         {value.map((url, i) => (
           <div key={url} className="relative">
-            <img
-              src={url}
-              alt=""
-              className="rounded-lg object-cover"
-              style={{ height: 76, width: 76, border: `1px solid ${THEME.border}` }}
-            />
+            {isPdfUrl(url) ? (
+              <a
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex flex-col items-center justify-center rounded-lg text-[11px] gap-1"
+                style={{ height: 76, width: 76, border: `1px solid ${THEME.border}`, color: THEME.textDim }}
+              >
+                <FileText size={22} />
+                <span>PDF</span>
+              </a>
+            ) : (
+              <img
+                src={url}
+                alt=""
+                className="rounded-lg object-cover"
+                style={{ height: 76, width: 76, border: `1px solid ${THEME.border}` }}
+              />
+            )}
             <button
               type="button"
               onClick={() => onChange(value.filter((_, idx) => idx !== i))}
               className="absolute -top-1.5 -right-1.5 rounded-full p-1"
               style={{ background: THEME.red, color: '#fff' }}
-              aria-label="Remove photo"
+              aria-label="Remove attachment"
             >
               <X size={11} />
             </button>
@@ -305,8 +321,8 @@ export function PhotoInput({ value = [], onChange, folder = 'misc', max = 6, lab
             <span>{busy ? 'Sending…' : label}</span>
             <input
               type="file"
-              accept="image/*"
-              capture="environment"
+              accept={accept}
+              capture={pdfAllowed ? undefined : 'environment'}
               multiple
               hidden
               disabled={busy}
@@ -324,15 +340,29 @@ export function PhotoStrip({ photos = [], onOpen, size = 44 }) {
   if (!photos.length) return <span style={{ color: THEME.textDim }}>—</span>;
   return (
     <div className="flex gap-1">
-      {photos.slice(0, 4).map((p, i) => (
-        <img
-          key={p}
-          src={p}
-          alt=""
-          onClick={() => onOpen?.(p)}
-          className="rounded object-cover cursor-pointer"
-          style={{ height: size, width: size }}
-        />
+      {photos.slice(0, 4).map((p) => (
+        isPdfUrl(p) ? (
+          <a
+            key={p}
+            href={p}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded flex items-center justify-center shrink-0"
+            style={{ height: size, width: size, border: `1px solid ${THEME.border}`, color: THEME.textDim }}
+            title="Open PDF"
+          >
+            <FileText size={Math.round(size * 0.45)} />
+          </a>
+        ) : (
+          <img
+            key={p}
+            src={p}
+            alt=""
+            onClick={() => onOpen?.(p)}
+            className="rounded object-cover cursor-pointer"
+            style={{ height: size, width: size }}
+          />
+        )
       ))}
       {photos.length > 4 && (
         <span className="text-xs self-center ml-1" style={{ color: THEME.textDim }}>

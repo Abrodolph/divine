@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Pencil } from 'lucide-react';
 import { useAppData } from '../context/AppDataContext';
 import { useAuth } from '../context/AuthContext';
 import { useRecords } from '../hooks/useRecords';
@@ -7,7 +8,7 @@ import { THEME } from '../lib/theme';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, TableWrap, Th, Td,
   StatusBadge, PhotoStrip, Lightbox, DeleteBtn, ExportButton, FormShell,
-  Field, Input, TextArea, Select, SiteSelect, PhotoInput,
+  Field, Input, TextArea, Select, SiteSelect, PhotoInput, Modal, Btn, IconBtn,
 } from './ui';
 
 /**
@@ -22,7 +23,7 @@ import {
 export default function RecordManager({ module, table, title, subtitle, fields, columns, filterField = 'site_id' }) {
   const { sites, activeSites, siteName, siteFilter } = useAppData();
   const { canEdit, locks } = useAuth();
-  const { rows, loading, error: loadError, add, remove } = useRecords(table, {
+  const { rows, loading, error: loadError, add, update, remove } = useRecords(table, {
     orderBy: fields.some((f) => f.key === 'date') ? 'date' : 'created_at',
   });
 
@@ -31,6 +32,11 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [lightbox, setLightbox] = useState(null);
+
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState(null);
 
   const editable = canEdit(module);
   const locked = !!locks[module];
@@ -61,6 +67,27 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
       await remove(id);
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  function startEdit(record) {
+    setEditingId(record.id);
+    setEditForm(fromRecord(record, fields));
+    setEditError(null);
+  }
+
+  async function submitEdit(e) {
+    e.preventDefault();
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      await update(editingId, clean(editForm, fields));
+      setEditingId(null);
+      setEditForm(null);
+    } catch (err) {
+      setEditError(err.message);
+    } finally {
+      setEditSaving(false);
     }
   }
 
@@ -134,7 +161,12 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
                       {fmtDate(r.date)} · {siteName(r.site_id)}
                     </div>
                   </div>
-                  {editable && !locked && <DeleteBtn onDelete={() => del(r.id)} />}
+                  {editable && !locked && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <IconBtn icon={Pencil} title="Edit" onClick={() => startEdit(r)} />
+                      <DeleteBtn onDelete={() => del(r.id)} />
+                    </div>
+                  )}
                 </div>
                 <dl className="mt-3 space-y-1.5 text-xs">
                   {columns.slice(1).map((c) => (
@@ -167,8 +199,13 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
                       </Td>
                     ))}
                     <Td>
-                      <div className="text-right">
-                        {editable && !locked && <DeleteBtn onDelete={() => del(r.id)} />}
+                      <div className="flex items-center justify-end gap-1">
+                        {editable && !locked && (
+                          <>
+                            <IconBtn icon={Pencil} title="Edit" onClick={() => startEdit(r)} />
+                            <DeleteBtn onDelete={() => del(r.id)} />
+                          </>
+                        )}
                       </div>
                     </Td>
                   </tr>
@@ -180,6 +217,28 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
       )}
 
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
+
+      <Modal open={!!editingId} onClose={() => setEditingId(null)} title={`Edit ${title}`} accent={module.accent}>
+        {editForm && (
+          <form onSubmit={submitEdit} className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+            {fields.map((f) => (
+              <Field key={f.key} label={f.label} required={f.required} full={f.full || f.type === 'photos'} hint={f.hint}>
+                <FieldControl field={f} value={editForm[f.key]}
+                  onChange={(v) => setEditForm((p) => ({ ...p, [f.key]: v }))} sites={activeSites} table={table} />
+              </Field>
+            ))}
+            {editError && (
+              <div className="sm:col-span-2 text-xs px-3 py-2 rounded-lg" style={{ color: THEME.red, background: 'rgba(215,38,61,0.1)' }}>
+                {editError}
+              </div>
+            )}
+            <div className="sm:col-span-2 flex gap-2 justify-end pt-1">
+              <Btn type="button" variant="subtle" onClick={() => setEditingId(null)}>Cancel</Btn>
+              <Btn type="submit" accent={module.accent} disabled={editSaving}>{editSaving ? 'Saving…' : 'Save'}</Btn>
+            </div>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -218,7 +277,8 @@ function FieldControl({ field, value, onChange, sites, table }) {
       return <SiteSelect sites={sites} value={v} required={field.required}
         onChange={(e) => onChange(e.target.value)} />;
     case 'photos':
-      return <PhotoInput value={value || []} onChange={onChange} folder={table} max={field.max ?? 6} />;
+      return <PhotoInput value={value || []} onChange={onChange} folder={table} max={field.max ?? 6}
+        accept={field.accept ?? 'image/*'} label={field.accept?.includes('pdf') ? 'Add photo / PDF' : undefined} />;
     default:
       return <Input type={field.type || 'text'} value={v} required={field.required}
         placeholder={field.placeholder} onChange={(e) => onChange(e.target.value)} />;
@@ -233,6 +293,16 @@ function blank(fields) {
       : f.type === 'photos' ? []
       : f.type === 'date' && f.key === 'date' ? today()
       : '';
+  });
+  return o;
+}
+
+/** Seeds the edit form from an existing row (mirrors blank()'s field shape). */
+function fromRecord(record, fields) {
+  const o = {};
+  fields.forEach((f) => {
+    const v = record[f.key];
+    o[f.key] = f.type === 'photos' ? (v || []) : (v ?? '');
   });
   return o;
 }

@@ -47,3 +47,26 @@ export async function uploadPhoto(file, folder = 'misc') {
 export async function uploadMany(files, folder = 'misc') {
   return Promise.all([...files].map((f) => uploadPhoto(f, folder)));
 }
+
+const isPdfFile = (file) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+
+/**
+ * Like uploadPhoto, but passes a PDF straight through instead of trying to
+ * resize it as an image (canvas can't render PDFs — resizeImage would just
+ * fail on them). Used wherever an attachment field also needs to take a
+ * scanned certificate as a PDF, not just a photo.
+ */
+export async function uploadAttachment(file, folder = 'misc') {
+  if (!isPdfFile(file)) return uploadPhoto(file, folder);
+  const name = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`;
+  const { error } = await supabase.storage
+    .from(BUCKET)
+    .upload(name, file, { contentType: 'application/pdf', cacheControl: '31536000' });
+  if (error) throw error;
+  const { data } = supabase.storage.from(BUCKET).getPublicUrl(name);
+  return data.publicUrl;
+}
+
+export async function uploadManyAttachments(files, folder = 'misc') {
+  return Promise.all([...files].map((f) => uploadAttachment(f, folder)));
+}

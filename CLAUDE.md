@@ -39,9 +39,10 @@ against a real Supabase project — without it, auth and all data calls fail.
 **Two component paths per module:**
 - *Config-driven modules* render through `RecordManager.jsx`, a single generic
   component that takes `fields`/`columns` from `fields.js` and handles the
-  form, live list (mobile cards / desktop table), add/delete, and CSV export.
-  `RecordManager` itself has no edit path — only bespoke modules do. These are
-  wired up as inline `<Route>` elements directly in `App.jsx`.
+  form, live list (mobile cards / desktop table), add/edit/delete, and CSV
+  export (edit opens a modal, pre-filled from the row, over the same field
+  config as the "New" form). These are wired up as inline `<Route>` elements
+  directly in `App.jsx`.
 - *Bespoke modules* (Attendance, Challans, AttendanceRegister, Sites,
   Team, Admin, Dashboard) have their own component in `src/modules/` because
   they need workflow beyond "log a record" (e.g. Challans auto-number
@@ -119,9 +120,8 @@ back to a flat pass-through of `salary_adjustments.amount`.
 - No offline mode — a site with no signal can't submit; nothing is lost, the
   form just stays on screen for retry.
 - `RecordManager`-based logs (DPR, Requirements, Material Received, etc.)
-  can't be edited after saving — delete and re-enter is the intended flow.
-  Attendance is the one bespoke module that *does* support editing an
-  existing entry, deliberately.
+  support editing an existing entry via a pencil icon → modal, in addition
+  to Attendance's bespoke edit-in-place.
 - New user logins are created directly in the Supabase dashboard, not in-app,
   to avoid needing a server component.
 - Deleting a site deletes its history; the "Close" button (hide from
