@@ -11,7 +11,6 @@ import * as F from './config/fields';
 import Dashboard from './modules/Dashboard';
 import Attendance from './modules/Attendance';
 import Challans from './modules/Challans';
-import SitePhotos from './modules/SitePhotos';
 import Sites from './modules/Sites';
 import Team from './modules/Team';
 import Advances from './modules/Advances';
@@ -51,7 +50,6 @@ function Shell() {
           {/* Modules with their own workflow */}
           <Route path="attendance" element={<Guard k="attendance"><Attendance /></Guard>} />
           <Route path="challans" element={<Guard k="challans"><Challans /></Guard>} />
-          <Route path="site_photos" element={<Guard k="site_photos"><SitePhotos /></Guard>} />
           <Route path="sites" element={<Guard k="sites"><Sites /></Guard>} />
           <Route path="team" element={<Guard k="team"><Team /></Guard>} />
           <Route path="advances" element={<Guard k="advances"><Advances /></Guard>} />
@@ -71,7 +69,8 @@ function Shell() {
             <Guard k="requirements">
               <RecordManager module={moduleByKey('requirements')} table="requirements"
                 title="Site Requirements" subtitle="What site needs from the office"
-                fields={F.REQUIREMENTS.fields} columns={F.REQUIREMENTS.columns} />
+                fields={F.REQUIREMENTS.fields} columns={F.REQUIREMENTS.columns}
+                toRow={F.REQUIREMENTS.toRow} fromRow={F.REQUIREMENTS.fromRow} />
             </Guard>
           } />
           <Route path="material_received" element={

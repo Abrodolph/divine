@@ -7,8 +7,9 @@ import { useAuth } from '../context/AuthContext';
 import { moduleByKey } from '../config/modules';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, Field, Input, SiteSelect,
-  TableWrap, Th, Td, Banner, Modal,
+  TableWrap, Th, Td, Banner, Modal, PayStatusToggle,
 } from '../components/ui';
+import { setSalaryStatus } from '../lib/salaryPayments';
 
 const MODULE = moduleByKey('attendance_register');
 
@@ -37,6 +38,8 @@ export default function AttendanceRegister() {
   const [attendance, setAttendance] = useState([]);
   const [advances, setAdvances] = useState([]);
   const [adjustments, setAdjustments] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [payingId, setPayingId] = useState(null);
   const [workingDays, setWorkingDays] = useState(null);
   const [totalDaysInput, setTotalDaysInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -69,13 +72,15 @@ export default function AttendanceRegister() {
       setError(null);
       const start = `${month}-01`;
       const end = nextMonthStart(month);
-      const [a, wd, adj] = await Promise.all([
+      const [a, wd, adj, pay] = await Promise.all([
         supabase.from('attendance').select('date,present_ids,present_times')
           .eq('site_id', siteId).gte('date', start).lt('date', end),
         supabase.from('working_days').select('*').eq('site_id', siteId).eq('month', month).maybeSingle(),
         supabase.from('salary_adjustments').select('*').eq('month', month),
+        supabase.from('salary_payments').select('*').eq('month', month),
       ]);
       if (cancelled) return;
+      setPayments(pay.data ?? []);
       if (a.error) setError(a.error.message);
       else if (adj.error) setError(adj.error.message);
       setAttendance(a.data ?? []);
@@ -151,6 +156,7 @@ export default function AttendanceRegister() {
       ? (totalDays > 0 ? (Number(override.amount) / totalDays) * effectiveDays : Number(override.amount))
       : null;
     const finalPayable = override ? overridePayable : payable;
+    const payment = payments.find((p) => p.employee_id === emp.id) ?? null;
 
     return {
       employee_id: emp.id, name: emp.name, trade: emp.trade,
@@ -158,8 +164,9 @@ export default function AttendanceRegister() {
       fullPay, perDayRate, absentDays, deduction, payable,
       advanceTotal, netAfterAdvance: payable != null ? payable - advanceTotal : null,
       override, finalPayable,
+      status: payment?.status ?? 'Due', paid_on: payment?.paid_on ?? null,
     };
-  }), [roster, attendance, totalDays, workingDaysElapsed, advances, adjustments]);
+  }), [roster, attendance, totalDays, workingDaysElapsed, advances, adjustments, payments]);
 
   const selectedRow = rows.find((r) => r.employee_id === selectedId) ?? null;
 
@@ -195,6 +202,19 @@ export default function AttendanceRegister() {
       setError(err.message || 'Could not remove the adjustment.');
     } finally {
       setSavingOverride(false);
+    }
+  }
+
+  async function togglePaid(employeeId, status) {
+    setPayingId(employeeId);
+    setError(null);
+    try {
+      const data = await setSalaryStatus(employeeId, month, status);
+      setPayments((prev) => [...prev.filter((p) => p.employee_id !== employeeId), data]);
+    } catch (err) {
+      setError(err.message || 'Could not update payment status.');
+    } finally {
+      setPayingId(null);
     }
   }
 
@@ -319,6 +339,7 @@ export default function AttendanceRegister() {
               <Th>Days Present</Th>
               {totalDays ? <Th>Absent</Th> : null}
               <Th>Payable</Th>
+              <Th>Salary</Th>
             </tr>
           </thead>
           <tbody>
@@ -349,6 +370,10 @@ export default function AttendanceRegister() {
                     <span style={{ color: THEME.textDim }}>—</span>
                   )}
                 </Td>
+                <Td>
+                  <PayStatusToggle status={r.status} paidOn={r.paid_on} editable={editable && !locked}
+                    busy={payingId === r.employee_id} onToggle={(st) => togglePaid(r.employee_id, st)} />
+                </Td>
               </tr>
             ))}
           </tbody>
@@ -372,6 +397,8 @@ export default function AttendanceRegister() {
             saving={savingOverride}
             onSave={(amount, note) => saveOverride(selectedRow.employee_id, amount, note)}
             onClear={() => clearOverride(selectedRow.employee_id)}
+            paying={payingId === selectedRow.employee_id}
+            onSetStatus={(st) => togglePaid(selectedRow.employee_id, st)}
           />
         )}
       </Modal>
@@ -379,7 +406,7 @@ export default function AttendanceRegister() {
   );
 }
 
-function Breakdown({ row, month, totalDays, workingDaysElapsed, asOf, editable, saving, onSave, onClear }) {
+function Breakdown({ row, month, totalDays, workingDaysElapsed, asOf, editable, saving, onSave, onClear, paying, onSetStatus }) {
   const [editing, setEditing] = useState(false);
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
@@ -464,6 +491,11 @@ function Breakdown({ row, month, totalDays, workingDaysElapsed, asOf, editable, 
             {row.override?.note && (
               <div className="text-xs mt-1.5" style={{ color: THEME.textDim }}>{row.override.note}</div>
             )}
+            <div className="flex justify-between items-start gap-3 mt-2">
+              <span style={{ color: THEME.textDim }}>Salary for {monthLabel(month)}</span>
+              <PayStatusToggle status={row.status} paidOn={row.paid_on} editable={editable}
+                busy={paying} onToggle={onSetStatus} />
+            </div>
             {editable && (
               <div className="flex gap-3 mt-2.5">
                 <button type="button" className="text-xs font-semibold" style={{ color: THEME.amber }} onClick={startEdit}>

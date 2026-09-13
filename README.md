@@ -16,7 +16,6 @@ Everything below runs on free tiers with no card on file.
 | **Attendance** | One daily muster per site — tick who's present, one group photo, GPS captured |
 | **Daily Progress** | Work done, manpower, weather, material consumed, issues, photos |
 | **Site Requirements** | What site needs from the office, with priority and open/fulfilled status |
-| **Work Photos** | Progress photo log by site and area |
 | **Rework Log** | Quality issues, root cause, corrective action |
 | **Site Indent** | Material requisition, auto-numbered `IND-0001-2026`, status tracked |
 | **Material Received** | Incoming material with photos of goods and supplier challan |

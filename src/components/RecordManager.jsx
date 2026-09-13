@@ -16,11 +16,21 @@ import {
  * Anything with its own workflow (attendance muster, delivery challans,
  * payroll) gets a bespoke component instead.
  *
- * fields:  [{ key, label, type, options?, required?, full?, default?, hint? }]
+ * fields:  [{ key, label, type, options?, required?, full?, default?, hint?, placeholder?, min?, step?,
+ *            visible?(form), onChange?(value, form) }]
  *          type: text | number | date | textarea | select | combo | site | photos
+ *          type/options/required/placeholder/hint/min may also be functions of
+ *          the form, for fields that depend on another answer. A hidden field
+ *          is skipped by validation and saved as null. select options may be
+ *          grouped: [{ group, options: [...] }]. onChange returns extra form
+ *          values to set alongside (e.g. clear the size when the item changes).
  * columns: [{ key, label, type? }]  type: date | site | status | photos
+ * toRow/fromRow: optional hooks to map the cleaned form to a row, and a row
+ *          back to the edit form.
  */
-export default function RecordManager({ module, table, title, subtitle, fields, columns, filterField = 'site_id' }) {
+export default function RecordManager({
+  module, table, title, subtitle, fields, columns, filterField = 'site_id', toRow, fromRow,
+}) {
   const { sites, activeSites, siteName, siteFilter } = useAppData();
   const { canEdit, locks } = useAuth();
   const { rows, loading, error: loadError, add, update, remove } = useRecords(table, {
@@ -40,7 +50,6 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
 
   const editable = canEdit(module);
   const locked = !!locks[module];
-  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
   const visible = useMemo(
     () => (siteFilter && filterField ? rows.filter((r) => r[filterField] === siteFilter) : rows),
@@ -52,7 +61,7 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
     setSaving(true);
     setError(null);
     try {
-      await add(clean(form, fields));
+      await add(clean(form, fields, toRow));
       setForm(blank(fields));
       setOpen(false);
     } catch (err) {
@@ -72,7 +81,7 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
 
   function startEdit(record) {
     setEditingId(record.id);
-    setEditForm(fromRecord(record, fields));
+    setEditForm(fromRecord(record, fields, fromRow));
     setEditError(null);
   }
 
@@ -81,7 +90,7 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
     setEditSaving(true);
     setEditError(null);
     try {
-      await update(editingId, clean(editForm, fields));
+      await update(editingId, clean(editForm, fields, toRow));
       setEditingId(null);
       setEditForm(null);
     } catch (err) {
@@ -122,11 +131,7 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
         error={error}
         disabled={!editable}
       >
-        {fields.map((f) => (
-          <Field key={f.key} label={f.label} required={f.required} full={f.full || f.type === 'photos'} hint={f.hint}>
-            <FieldControl field={f} value={form[f.key]} onChange={(v) => set(f.key, v)} sites={activeSites} table={table} />
-          </Field>
-        ))}
+        <FormFields fields={fields} form={form} setForm={setForm} sites={activeSites} table={table} />
       </FormShell>
 
       {loadError && <div className="text-xs mb-3" style={{ color: THEME.red }}>{loadError}</div>}
@@ -221,12 +226,7 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
       <Modal open={!!editingId} onClose={() => setEditingId(null)} title={`Edit ${title}`} accent={module.accent}>
         {editForm && (
           <form onSubmit={submitEdit} className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-            {fields.map((f) => (
-              <Field key={f.key} label={f.label} required={f.required} full={f.full || f.type === 'photos'} hint={f.hint}>
-                <FieldControl field={f} value={editForm[f.key]}
-                  onChange={(v) => setEditForm((p) => ({ ...p, [f.key]: v }))} sites={activeSites} table={table} />
-              </Field>
-            ))}
+            <FormFields fields={fields} form={editForm} setForm={setEditForm} sites={activeSites} table={table} />
             {editError && (
               <div className="sm:col-span-2 text-xs px-3 py-2 rounded-lg" style={{ color: THEME.red, background: 'rgba(215,38,61,0.1)' }}>
                 {editError}
@@ -245,6 +245,30 @@ export default function RecordManager({ module, table, title, subtitle, fields, 
 
 /* ------------------------------- helpers --------------------------------- */
 
+const DYNAMIC_PROPS = ['type', 'options', 'required', 'placeholder', 'hint', 'min'];
+
+/** The field with any form-dependent props evaluated against the current form. */
+function resolve(field, form) {
+  const f = { ...field, hidden: field.visible ? !field.visible(form) : false };
+  DYNAMIC_PROPS.forEach((p) => {
+    if (typeof field[p] === 'function') f[p] = field[p](form);
+  });
+  return f;
+}
+
+function FormFields({ fields, form, setForm, sites, table }) {
+  return fields.map((raw) => {
+    const f = resolve(raw, form);
+    if (f.hidden) return null;
+    return (
+      <Field key={f.key} label={f.label} required={f.required} full={f.full || f.type === 'photos'} hint={f.hint}>
+        <FieldControl field={f} value={form[f.key]} sites={sites} table={table}
+          onChange={(v) => setForm((p) => ({ ...p, [f.key]: v, ...(raw.onChange?.(v, p) ?? {}) }))} />
+      </Field>
+    );
+  });
+}
+
 function Cell({ row, col, siteName, onOpenPhoto }) {
   const v = row[col.key];
   if (col.type === 'site') return siteName(v);
@@ -261,8 +285,20 @@ function FieldControl({ field, value, onChange, sites, table }) {
       return <TextArea value={v} required={field.required} placeholder={field.placeholder}
         onChange={(e) => onChange(e.target.value)} />;
     case 'select':
-      return <Select value={v} required={field.required} options={field.options}
-        onChange={(e) => onChange(e.target.value)} />;
+      return (
+        <Select value={v} required={field.required} options={field.options} placeholder={field.placeholder}
+          onChange={(e) => onChange(e.target.value)}>
+          {field.options?.some((o) => o?.group)
+            ? field.options.map((g) => (
+              <optgroup key={g.group} label={g.group}>
+                {g.options.map((o) => (typeof o === 'string'
+                  ? <option key={o} value={o}>{o}</option>
+                  : <option key={o.value} value={o.value}>{o.label}</option>))}
+              </optgroup>
+            ))
+            : undefined}
+        </Select>
+      );
     case 'combo':
       return (
         <>
@@ -281,6 +317,7 @@ function FieldControl({ field, value, onChange, sites, table }) {
         accept={field.accept ?? 'image/*'} label={field.accept?.includes('pdf') ? 'Add photo / PDF' : undefined} />;
     default:
       return <Input type={field.type || 'text'} value={v} required={field.required}
+        min={field.min} step={field.step} inputMode={field.type === 'number' ? 'decimal' : undefined}
         placeholder={field.placeholder} onChange={(e) => onChange(e.target.value)} />;
   }
 }
@@ -298,24 +335,28 @@ function blank(fields) {
 }
 
 /** Seeds the edit form from an existing row (mirrors blank()'s field shape). */
-function fromRecord(record, fields) {
+function fromRecord(record, fields, fromRow) {
   const o = {};
   fields.forEach((f) => {
     const v = record[f.key];
     o[f.key] = f.type === 'photos' ? (v || []) : (v ?? '');
   });
-  return o;
+  return fromRow ? fromRow(o, record) : o;
 }
 
-/** Postgres rejects '' for numeric/date/uuid columns — send null instead. */
-function clean(form, fields) {
+/**
+ * Postgres rejects '' for numeric/date/uuid columns — send null instead.
+ * Hidden fields are saved as null so a stale value can't linger.
+ */
+function clean(form, fields, toRow) {
   const out = {};
-  fields.forEach((f) => {
+  fields.forEach((raw) => {
+    const f = resolve(raw, form);
     const v = form[f.key];
     if (f.type === 'photos') out[f.key] = v || [];
-    else if (v === '' || v === undefined) out[f.key] = null;
+    else if (f.hidden || v === '' || v === undefined) out[f.key] = null;
     else if (f.type === 'number') out[f.key] = Number(v);
     else out[f.key] = v;
   });
-  return out;
+  return toRow ? toRow(out, form) : out;
 }

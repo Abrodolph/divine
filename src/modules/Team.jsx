@@ -11,8 +11,9 @@ import { COMPANY } from '../config/company';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, Field, Input, Select,
   SiteSelect, TableWrap, Th, Td, IconBtn, DeleteBtn, ExportButton, Banner, Modal, FormShell,
-  PhotoInput,
+  PhotoInput, PayStatusToggle,
 } from '../components/ui';
+import { setSalaryStatus } from '../lib/salaryPayments';
 
 const MODULE = moduleByKey('team');
 const blankWorker = { name: '', trade: '', site_id: '', wage_type: 'Daily', wage_rate: '', phone: '', aadhaar: '', photo: '' };
@@ -117,6 +118,8 @@ export default function Team() {
   const [attendance, setAttendance] = useState([]);
   const [advances, setAdvances] = useState([]);
   const [adjustments, setAdjustments] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [payingId, setPayingId] = useState(null);
   const [payrollLoading, setPayrollLoading] = useState(true);
   const [printId, setPrintId] = useState(null);
   const [savingRun, setSavingRun] = useState(false);
@@ -132,12 +135,14 @@ export default function Team() {
       setPayrollLoading(true);
       const start = `${month}-01`;
       const end = nextMonthStart(month);
-      const [a, adv, adj] = await Promise.all([
+      const [a, adv, adj, pay] = await Promise.all([
         supabase.from('attendance').select('date,present_ids').gte('date', start).lt('date', end),
         supabase.from('advances').select('employee_id,amount,date').gte('date', start).lt('date', end),
         supabase.from('salary_adjustments').select('*').eq('month', month),
+        supabase.from('salary_payments').select('*').eq('month', month),
       ]);
       if (cancelled) return;
+      setPayments(pay.data ?? []);
       setAttendance(a.data ?? []);
       setAdvances(adv.data ?? []);
       setAdjustments(adj.data ?? []);
@@ -160,6 +165,7 @@ export default function Team() {
           .reduce((s, a) => s + (Number(a.amount) || 0), 0);
         const calculatedNet = gross - advance;
         const override = adjustments.find((a) => a.employee_id === emp.id) ?? null;
+        const payment = payments.find((p) => p.employee_id === emp.id) ?? null;
         return {
           employee_id: emp.id,
           name: emp.name,
@@ -173,9 +179,11 @@ export default function Team() {
           calculatedNet,
           override,
           net: override ? Number(override.amount) : calculatedNet,
+          status: payment?.status ?? 'Due',
+          paid_on: payment?.paid_on ?? null,
         };
       });
-  }, [employees, attendance, advances, adjustments, siteName]);
+  }, [employees, attendance, advances, adjustments, payments, siteName]);
 
   const totals = useMemo(
     () => payrollRows.reduce(
@@ -199,6 +207,19 @@ export default function Team() {
       setError(e.message);
     } finally {
       setSavingRun(false);
+    }
+  }
+
+  async function togglePaid(employeeId, status) {
+    setPayingId(employeeId);
+    setError(null);
+    try {
+      const data = await setSalaryStatus(employeeId, month, status);
+      setPayments((prev) => [...prev.filter((p) => p.employee_id !== employeeId), data]);
+    } catch (err) {
+      setError(err.message || 'Could not update payment status.');
+    } finally {
+      setPayingId(null);
     }
   }
 
@@ -258,6 +279,8 @@ export default function Team() {
     { key: 'gross', label: 'Gross' },
     { key: 'advance', label: 'Advances' },
     { key: 'net', label: 'Net Payable' },
+    { key: 'status', label: 'Payment Status' },
+    { key: 'paid_on', label: 'Paid On', value: (r) => (r.paid_on ? fmtDate(r.paid_on) : '') },
   ];
 
   return (
@@ -403,7 +426,7 @@ export default function Team() {
           <TableWrap>
             <thead>
               <tr style={{ background: THEME.panel2 }}>
-                {['Worker', 'Site', 'Type', 'Days', 'Gross', 'Advances', 'Net Payable'].map((h) => (
+                {['Worker', 'Site', 'Type', 'Days', 'Gross', 'Advances', 'Net Payable', 'Status'].map((h) => (
                   <Th key={h}>{h}</Th>
                 ))}
               </tr>
@@ -426,6 +449,10 @@ export default function Team() {
                       )}
                     </div>
                   </Td>
+                  <Td>
+                    <PayStatusToggle status={r.status} paidOn={r.paid_on} editable={editable && !locked}
+                      busy={payingId === r.employee_id} onToggle={(st) => togglePaid(r.employee_id, st)} />
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -435,6 +462,9 @@ export default function Team() {
                 <td className="px-3 py-2.5 font-semibold">{inr(totals.gross)}</td>
                 <td className="px-3 py-2.5 font-semibold" style={{ color: THEME.amber }}>-{inr(totals.advance)}</td>
                 <td className="px-3 py-2.5 font-semibold" style={{ color: THEME.green }}>{inr(totals.net)}</td>
+                <td className="px-3 py-2.5 text-xs whitespace-nowrap" style={{ color: THEME.textDim }}>
+                  {payrollRows.filter((r) => r.status === 'Paid').length}/{payrollRows.length} paid
+                </td>
               </tr>
             </tfoot>
           </TableWrap>

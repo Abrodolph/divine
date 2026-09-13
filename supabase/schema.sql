@@ -15,7 +15,7 @@ create table if not exists public.roles (
 );
 
 -- Module keys used everywhere in the app and in the permission maps:
---   attendance, dpr, requirements, material_received, site_photos,
+--   attendance, dpr, requirements, material_received,
 --   challans, transport, mtc, drawings, rework, sites, team, advances,
 --   attendance_register
 -- Values: 'none' | 'view' | 'edit'
@@ -24,17 +24,17 @@ create table if not exists public.roles (
 insert into public.roles (id, name, is_admin, permissions) values
   ('admin', 'Admin', true, '{}'::jsonb),
   ('site', 'Site Team', false, '{
-     "attendance":"edit","dpr":"edit","requirements":"edit","site_photos":"edit",
+     "attendance":"edit","dpr":"edit","requirements":"edit",
      "material_received":"edit","rework":"edit","challans":"edit",
      "transport":"edit","mtc":"edit","drawings":"view","sites":"view",
      "team":"none","advances":"none","attendance_register":"none"}'::jsonb),
   ('office', 'Office / Store', false, '{
-     "attendance":"view","dpr":"view","requirements":"edit","site_photos":"view",
+     "attendance":"view","dpr":"view","requirements":"edit",
      "material_received":"edit","rework":"view","challans":"edit",
      "transport":"edit","mtc":"edit","drawings":"edit","sites":"edit",
      "team":"edit","advances":"edit","attendance_register":"none"}'::jsonb),
   ('viewer', 'Viewer', false, '{
-     "attendance":"view","dpr":"view","requirements":"view","site_photos":"view",
+     "attendance":"view","dpr":"view","requirements":"view",
      "material_received":"view","rework":"view","challans":"view",
      "transport":"view","mtc":"view","drawings":"view","sites":"view",
      "team":"view","advances":"view","attendance_register":"view"}'::jsonb)
@@ -60,6 +60,10 @@ where permissions ? 'payroll';
 -- instead of two doing the same job. Drop the now-unused permission key from
 -- existing roles. No-op on a fresh install, and a no-op once the key is gone.
 update public.roles set permissions = permissions - 'indents' where permissions ? 'indents';
+
+-- Upgrade path: Work Photos was removed. Drop its permission key from existing
+-- roles (the table itself is dropped in section 6). No-op once the key is gone.
+update public.roles set permissions = permissions - 'site_photos' where permissions ? 'site_photos';
 
 -- ---------------------------------------------------------------------------
 -- 2. PROFILES  (one row per login, auto-created on signup)
@@ -223,6 +227,22 @@ create table if not exists public.requirements (
   created_by uuid references auth.users
 );
 alter table public.requirements add column if not exists unit text;
+alter table public.requirements add column if not exists dimension text;     -- size, picked per item
+alter table public.requirements add column if not exists required_by date;   -- tentative need-by date
+
+-- Upgrade path: the catalog used to list one entry per size ("M.S PIPE 100MM").
+-- It's now one item plus a separate dimension, so split those old rows the
+-- same way. Only matches the old combined names, so re-running is a no-op.
+update public.requirements
+set dimension = substring(item from '(\d+MM)$'),
+    item      = regexp_replace(item, '\s+\d+MM$', '')
+where dimension is null
+  and item ~ '^(M\.S PIPE|G\.I PIPE|BUTTERFLY VALVE|NON RETURN VALVE \(NRV\)|BALL VALVE|WRAPPING COATING) \d+MM$';
+update public.requirements
+set dimension = substring(item from '(\d+x\d+(x\d+)?)$'),
+    item      = regexp_replace(item, '\s+\d+x\d+(x\d+)?$', '')
+where dimension is null
+  and item ~ '^(M\.S ANGLE|M\.S CHANNEL) \d+x\d+(x\d+)?$';
 
 -- Upgrade path: Site Indent duplicated Site Requirements, so it's gone —
 -- drop the table (and its data) for any project that already has it. Safe
@@ -246,17 +266,11 @@ create table if not exists public.material_received (
   created_by  uuid references auth.users
 );
 
-create table if not exists public.site_photos (
-  id          uuid primary key default gen_random_uuid(),
-  date        date not null default current_date,
-  site_id     uuid references public.sites on delete cascade,
-  area        text,
-  caption     text,
-  uploaded_by text,
-  photos      text[] not null default '{}',
-  created_at  timestamptz not null default now(),
-  created_by  uuid references auth.users
-);
+-- Upgrade path: Work Photos was removed from the app — drop its table (and its
+-- rows) for any project that already has it. The image files themselves stay
+-- in the uploads bucket under site_photos/. No-op once dropped.
+drop table if exists public.site_photos cascade;
+delete from public.module_locks where module = 'site_photos';
 
 create table if not exists public.challans (
   id               uuid primary key default gen_random_uuid(),
@@ -402,6 +416,20 @@ alter table public.salary_adjustments drop column if exists site_id cascade;
 alter table public.salary_adjustments drop constraint if exists salary_adjustments_employee_id_month_key;
 alter table public.salary_adjustments add constraint salary_adjustments_employee_id_month_key unique (employee_id, month);
 
+-- Whether a worker's salary for a month has been paid out. No row = Due.
+-- Like salary_adjustments, settable from either Team's payroll section or the
+-- Attendance Register.
+create table if not exists public.salary_payments (
+  id          uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references public.employees on delete cascade,
+  month       text not null,          -- 'YYYY-MM'
+  status      text not null default 'Due' check (status in ('Paid', 'Due')),
+  paid_on     date,
+  updated_at  timestamptz not null default now(),
+  created_by  uuid references auth.users default auth.uid(),
+  unique (employee_id, month)
+);
+
 -- ---------------------------------------------------------------------------
 -- 8. DOCUMENT NUMBERING  (gap-free, survives deletions — unlike counting rows)
 -- ---------------------------------------------------------------------------
@@ -433,6 +461,7 @@ create index if not exists idx_advances_date on public.advances (date desc);
 create index if not exists idx_employees_site on public.employees (site_id);
 create index if not exists idx_working_days_site_month on public.working_days (site_id, month);
 create index if not exists idx_salary_adjustments_month on public.salary_adjustments (month);
+create index if not exists idx_salary_payments_month on public.salary_payments (month);
 
 -- ---------------------------------------------------------------------------
 -- 10. ROW LEVEL SECURITY
@@ -446,7 +475,7 @@ begin
     select * from (values
       ('sites','sites'), ('employees','team'), ('attendance','attendance'),
       ('dpr','dpr'), ('requirements','requirements'),
-      ('material_received','material_received'), ('site_photos','site_photos'),
+      ('material_received','material_received'),
       ('challans','challans'), ('transport','transport'), ('mtc','mtc'),
       ('drawings','drawings'), ('rework','rework'), ('advances','advances'),
       ('payroll_runs','team'), ('working_days','attendance_register')
@@ -490,6 +519,17 @@ create policy salary_adj_read on public.salary_adjustments
   for select to authenticated using (true);
 drop policy if exists salary_adj_write on public.salary_adjustments;
 create policy salary_adj_write on public.salary_adjustments
+  for all to authenticated
+  using (public.can_edit('team') or public.can_edit('attendance_register'))
+  with check (public.can_edit('team') or public.can_edit('attendance_register'));
+
+-- Salary payments (Paid/Due): same rule as salary adjustments.
+alter table public.salary_payments enable row level security;
+drop policy if exists salary_pay_read on public.salary_payments;
+create policy salary_pay_read on public.salary_payments
+  for select to authenticated using (true);
+drop policy if exists salary_pay_write on public.salary_payments;
+create policy salary_pay_write on public.salary_payments
   for all to authenticated
   using (public.can_edit('team') or public.can_edit('attendance_register'))
   with check (public.can_edit('team') or public.can_edit('attendance_register'));
@@ -560,8 +600,8 @@ declare
 begin
   foreach t in array array[
     'sites','employees','attendance','dpr','requirements',
-    'material_received','site_photos','challans','transport','mtc',
-    'drawings','rework','advances','payroll_runs','working_days','salary_adjustments',
+    'material_received','challans','transport','mtc',
+    'drawings','rework','advances','payroll_runs','working_days','salary_adjustments','salary_payments',
     'profiles','module_locks'
   ] loop
     begin

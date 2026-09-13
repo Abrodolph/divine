@@ -3,6 +3,7 @@ import { Download, Lock, Trash2, X, Loader2, Camera, Plus, FileText } from 'luci
 import { THEME } from '../lib/theme';
 import { uploadAttachment } from '../lib/upload';
 import { exportCSV } from '../lib/csv';
+import { fmtDate } from '../lib/format';
 
 const isPdfUrl = (url) => /\.pdf(\?|$)/i.test(url);
 
@@ -118,9 +119,9 @@ export function StatusBadge({ value }) {
   const v = String(value).toLowerCase();
   let color = THEME.textDim;
   let bg = 'rgba(155,161,166,0.15)';
-  if (['open', 'pending', 'for review', 'medium'].includes(v)) {
+  if (['open', 'pending', 'for review', 'medium', 'due'].includes(v)) {
     color = THEME.amber; bg = 'rgba(255,193,7,0.14)';
-  } else if (['approved', 'fulfilled', 'closed', 'pass', 'issued', 'for construction', 'delivered', 'low'].includes(v)) {
+  } else if (['approved', 'fulfilled', 'closed', 'pass', 'issued', 'for construction', 'delivered', 'low', 'paid'].includes(v)) {
     color = THEME.green; bg = 'rgba(62,166,94,0.14)';
   } else if (['fail', 'urgent', 'superseded', 'high', 'rejected'].includes(v)) {
     color = THEME.red; bg = 'rgba(215,38,61,0.14)';
@@ -130,6 +131,29 @@ export function StatusBadge({ value }) {
   return (
     <span className="px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap" style={{ color, background: bg }}>
       {value}
+    </span>
+  );
+}
+
+/** Salary Paid/Due badge — tap to flip it when editable. */
+export function PayStatusToggle({ status = 'Due', paidOn, editable, busy, onToggle }) {
+  const badge = <StatusBadge value={status} />;
+  return (
+    <span className="inline-flex flex-col items-start gap-0.5">
+      {editable ? (
+        <button
+          type="button"
+          disabled={busy}
+          className="disabled:opacity-50"
+          title={status === 'Paid' ? 'Mark as due' : 'Mark as paid'}
+          onClick={(e) => { e.stopPropagation(); onToggle(status === 'Paid' ? 'Due' : 'Paid'); }}
+        >
+          {badge}
+        </button>
+      ) : badge}
+      {status === 'Paid' && paidOn && (
+        <span className="text-[11px] whitespace-nowrap" style={{ color: THEME.textDim }}>{fmtDate(paidOn)}</span>
+      )}
     </span>
   );
 }

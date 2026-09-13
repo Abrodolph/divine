@@ -20,8 +20,14 @@ npm run preview   # serve the production build locally
 ```
 
 There is no test suite and no linter configured. Requires a `.env` with
-`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`) to run
-against a real Supabase project — without it, auth and all data calls fail.
+`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` to run against a real
+Supabase project — without them `src/lib/supabase.js` throws at startup.
+(README and that error message refer to `.env.example`, but that file does not
+currently exist in the repo; `.env` itself is gitignored.) The `VITE_` values
+are baked into the build, so they must also be set in the host's env settings.
+
+`docs/` holds a dated analysis/roadmap (`01-…`) and per-phase Claude Code
+prompts (`02-…`) — check them for context before large, multi-phase changes.
 
 ## Architecture
 
@@ -43,8 +49,17 @@ against a real Supabase project — without it, auth and all data calls fail.
   export (edit opens a modal, pre-filled from the row, over the same field
   config as the "New" form). These are wired up as inline `<Route>` elements
   directly in `App.jsx`.
-- *Bespoke modules* (Attendance, Challans, AttendanceRegister, Sites,
-  Team, Admin, Dashboard) have their own component in `src/modules/` because
+- Field props `type`/`options`/`required`/`placeholder`/`hint`/`min` may be
+  functions of the form, plus `visible(form)` and `onChange(value, form)`
+  (returns extra values to set); `toRow`/`fromRow` props map form ↔ row.
+  Site Requirements uses these: `REQUIREMENT_CATALOG` in `fields.js` (from
+  `public/SITE REQUIREMENT TAB.xlsx`) lists each item once with its default
+  unit and sizes — the Dimension field is a compulsory dropdown for items with
+  `sizes`, compulsory free text for `size`, and hidden for items with neither.
+  "Other" items are stored as the typed name in `item`.
+- *Bespoke modules* (Attendance, Challans, Advances, AttendanceRegister,
+  Sites, Team, Admin, Dashboard) have their own component in `src/modules/`
+  because
   they need workflow beyond "log a record" (e.g. Challans auto-number
   `DC-0001-2026`; Attendance captures a group photo + GPS
   muster and supports edit-in-place; AttendanceRegister computes per-worker
@@ -52,6 +67,12 @@ against a real Supabase project — without it, auth and all data calls fail.
   payroll (computes and snapshots monthly salary) on one screen, gated by a
   single `team` permission — they used to be separate tabs/permissions but
   were merged since payroll has no reason to be visible without the roster.
+
+**Routing (`App.jsx`):** every module route is wrapped in `<Guard k="key">`
+(`canView`); Dashboard is the index route and needs no permission; `/admin`
+uses `AdminGuard` (`role.is_admin`), not a module permission. `/payroll` →
+`/team` and `/indents` → `/requirements` are redirects kept for old links from
+merged/renamed modules — keep that pattern when renaming a module key.
 
 **Data layer:**
 - `src/lib/supabase.js` is the single Supabase client instance.
@@ -72,6 +93,14 @@ against a real Supabase project — without it, auth and all data calls fail.
 - `Modal` in `src/components/ui.jsx` is the generic popup (backdrop click or
   the X to close) — used for the Attendance Register / Payroll salary
   breakdown-and-edit popups. `Lightbox` is a separate, photo-only viewer.
+- `src/lib/upload.js` handles all files, into the public `uploads` storage
+  bucket: `uploadPhoto`/`uploadMany` downscale images client-side (1280px,
+  JPEG 70%) for weak site connections; `uploadAttachment(s)` upload as-is
+  (e.g. PDFs). Use these rather than calling Storage directly.
+- `src/config/company.js` holds business details printed on delivery challans
+  (Challans) and salary statements (Team). `src/lib/theme.js` is the colour
+  palette (styles are mostly inline `style={{ color: THEME.x }}` alongside
+  Tailwind classes). CSV export goes through `src/lib/csv.js`.
 
 **Authorization is enforced twice, deliberately:** `AuthContext`/`modules.js`
 gate what the UI shows, but the real enforcement is Postgres Row Level
@@ -106,6 +135,9 @@ override is a full-month target (e.g. a raise effective mid-month); the
 Attendance Register prorates it by working days elapsed instead of showing
 the whole target amount before the month is over — don't let it collapse
 back to a flat pass-through of `salary_adjustments.amount`.
+`salary_payments` (Paid/Due per worker per month; no row = Due, written via
+`src/lib/salaryPayments.js`) follows the same either-permission policy and is
+toggled from both screens.
 
 ## Adding a new module
 

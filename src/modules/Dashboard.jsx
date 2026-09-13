@@ -23,12 +23,11 @@ export default function Dashboard() {
     (async () => {
       const d = today();
       const monthStart = `${thisMonth()}-01`;
-      const [att, dpr, reqs, rework, photos, advances] = await Promise.all([
+      const [att, dpr, reqs, rework, advances] = await Promise.all([
         supabase.from('attendance').select('site_id,present_ids,date,created_at').eq('date', d),
         supabase.from('dpr').select('id,site_id,date,work_done,created_at').order('date', { ascending: false }).limit(5),
-        supabase.from('requirements').select('id,item,status,priority,site_id,date').neq('status', 'Fulfilled').order('date', { ascending: false }).limit(6),
+        supabase.from('requirements').select('id,item,dimension,status,priority,site_id,date').neq('status', 'Fulfilled').order('date', { ascending: false }).limit(6),
         supabase.from('rework').select('id,issue,status,site_id,date').neq('status', 'Closed').order('date', { ascending: false }).limit(6),
-        supabase.from('site_photos').select('id,site_id,date,photos,created_at').order('created_at', { ascending: false }).limit(6),
         supabase.from('advances').select('amount,date').gte('date', monthStart),
       ]);
       if (cancelled) return;
@@ -37,7 +36,6 @@ export default function Dashboard() {
         dpr: dpr.data ?? [],
         requirements: reqs.data ?? [],
         rework: rework.data ?? [],
-        photos: photos.data ?? [],
         advances: advances.data ?? [],
       });
     })();
@@ -160,7 +158,7 @@ export default function Dashboard() {
                   <li key={r.id} className="flex justify-between items-center gap-2 border-b pb-2"
                     style={{ borderColor: THEME.border }}>
                     <span className="truncate">
-                      {r.item}
+                      {r.item}{r.dimension ? ` ${r.dimension}` : ''}
                       <span className="text-xs ml-1.5" style={{ color: THEME.textDim }}>{siteName(r.site_id)}</span>
                     </span>
                     <StatusBadge value={r.priority} />
@@ -189,15 +187,6 @@ export default function Dashboard() {
           </Panel>
         )}
 
-        {canView('site_photos') && filt(state.photos).length > 0 && (
-          <Panel title="Latest site photos" to="/site_photos">
-            <div className="grid grid-cols-4 gap-1.5">
-              {filt(state.photos).flatMap((p) => (p.photos ?? []).slice(0, 1)).slice(0, 8).map((url) => (
-                <img key={url} src={url} alt="" className="rounded object-cover w-full" style={{ height: 62 }} />
-              ))}
-            </div>
-          </Panel>
-        )}
       </div>
     </div>
   );
