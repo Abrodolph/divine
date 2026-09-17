@@ -96,8 +96,7 @@ export default function Login() {
         </form>
 
         <div className="text-[11px] text-center mt-6 leading-relaxed" style={{ color: THEME.textDim }}>
-          No account? Ask the office to create one for you — accounts are added
-          from the Supabase dashboard and given a role here.
+          No account? Ask the Admin — logins are created in Admin Control.
         </div>
       </div>
     </div>

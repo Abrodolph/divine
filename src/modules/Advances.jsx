@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { moduleByKey } from '../config/modules';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, Card, Field, Input, Select,
-  TextArea, TableWrap, Th, Td, DeleteBtn, ExportButton, FormShell,
+  TextArea, TableWrap, Th, Td, DeleteBtn, ExportButton, FormShell, LoadMore,
 } from '../components/ui';
 
 const MODULE = moduleByKey('advances');
@@ -15,7 +15,7 @@ const MODULE = moduleByKey('advances');
 export default function Advances() {
   const { activeEmployees, empName } = useAppData();
   const { canEdit, locks } = useAuth();
-  const { rows, loading, add, remove } = useRecords('advances', { orderBy: 'date' });
+  const { rows, loading, add, remove, hasMore, loadMore } = useRecords('advances', { orderBy: 'date' });
 
   const blank = { date: today(), employee_id: '', amount: '1000', week: '', remarks: '' };
   const [form, setForm] = useState(blank);
@@ -66,7 +66,7 @@ export default function Advances() {
     <div>
       <SectionHeader
         title="Weekly Advance"
-        subtitle="Cash paid out during the month — deducted automatically at payroll"
+        subtitle="Cash paid out during the month — deducted automatically at payroll. Locked once the month is finalised."
         icon={MODULE.icon}
         accent={MODULE.accent}
         action={<ExportButton filename="advances.csv" columns={exportCols} rows={rows} />}
@@ -139,6 +139,7 @@ export default function Advances() {
           </tbody>
         </TableWrap>
       )}
+      <LoadMore hasMore={hasMore} onClick={loadMore} />
       {error && <div className="text-xs mt-3" style={{ color: THEME.red }}>{error}</div>}
     </div>
   );

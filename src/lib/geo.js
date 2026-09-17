@@ -26,3 +26,14 @@ export function getPosition({ timeout = 15000 } = {}) {
 }
 
 export const mapsLink = (lat, lng) => `https://maps.google.com/?q=${lat},${lng}`;
+
+/** Straight-line distance in metres (haversine) — mirrors geo_distance_m() in the schema. */
+export function distanceM(lat1, lng1, lat2, lng2) {
+  if ([lat1, lng1, lat2, lng2].some((v) => v === null || v === undefined || v === '')) return null;
+  const rad = (d) => (Number(d) * Math.PI) / 180;
+  const a = Math.sin((rad(lat2) - rad(lat1)) / 2) ** 2
+    + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin((rad(lng2) - rad(lng1)) / 2) ** 2;
+  return Math.round(2 * 6371000 * Math.asin(Math.sqrt(a)));
+}
+
+export const fmtDistance = (m) => (m === null || m === undefined ? '—' : m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m} m`);

@@ -1,12 +1,13 @@
 /**
- * Printed on delivery challans and salary statements.
- * Edit these once with your uncle's real details — nothing else needs changing.
+ * Fallback business details for printed documents. The real values live in
+ * the database (Admin Control → Company details, table org_settings) and win
+ * over these; this only fills gaps until they're entered.
  */
 export const COMPANY = {
   name: 'DIVINE ENGINEERING SERVICES',
   tagline: 'Fire Fighting & Electrical Contracting',
-  address: '',        // e.g. 'Shop 4, MIDC Road, Pune 411019'
-  phone: '',          // e.g. '+91 98765 43210'
+  address: '',
+  phone: '',
   email: '',
-  gstin: '',          // shown on the challan if filled in
+  gstin: '',
 };

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Pencil } from 'lucide-react';
 import { useAppData } from '../context/AppDataContext';
 import { useAuth } from '../context/AuthContext';
@@ -6,35 +6,41 @@ import { useRecords } from '../hooks/useRecords';
 import { fmtDate, today } from '../lib/format';
 import { THEME } from '../lib/theme';
 import {
-  SectionHeader, LockBanner, EmptyState, Loading, TableWrap, Th, Td,
-  StatusBadge, PhotoStrip, Lightbox, DeleteBtn, ExportButton, FormShell,
-  Field, Input, TextArea, Select, SiteSelect, PhotoInput, Modal, Btn, IconBtn,
+  SectionHeader, LockBanner, EmptyState, Loading, TableWrap, Th, Td, LoadMore,
+  StatusBadge, PhotoStrip, Lightbox, DeleteBtn, ExportButton, FormShell, FormError,
+  Field, Input, TextArea, Select, SiteSelect, PhotoInput, Modal, Btn, IconBtn, Toggle,
 } from './ui';
 
 /**
  * Config-driven screen for the modules that are plain "log a record" lists.
- * Anything with its own workflow (attendance muster, delivery challans,
- * payroll) gets a bespoke component instead.
+ * Anything with its own workflow (attendance, procurement, payroll) gets a
+ * bespoke component instead.
  *
  * fields:  [{ key, label, type, options?, required?, full?, default?, hint?, placeholder?, min?, step?,
  *            visible?(form), onChange?(value, form) }]
- *          type: text | number | date | textarea | select | combo | site | photos
+ *          type: text | number | date | tel | email | textarea | select | combo | site | photos | tags | checkbox
  *          type/options/required/placeholder/hint/min may also be functions of
  *          the form, for fields that depend on another answer. A hidden field
  *          is skipped by validation and saved as null. select options may be
  *          grouped: [{ group, options: [...] }]. onChange returns extra form
  *          values to set alongside (e.g. clear the size when the item changes).
- * columns: [{ key, label, type? }]  type: date | site | status | photos
+ *          tags edits a text[] column as comma-separated text.
+ * columns: [{ key, label, type?, value?(row) }]  type: date | site | status | photos | tags | bool
  * toRow/fromRow: optional hooks to map the cleaned form to a row, and a row
  *          back to the edit form.
+ * filterField: column the global site filter applies to (null = none). The
+ *          filter is applied in the database query, not after loading.
  */
 export default function RecordManager({
-  module, table, title, subtitle, fields, columns, filterField = 'site_id', toRow, fromRow,
+  module, table, title, subtitle, fields, columns, filterField = 'site_id', toRow, fromRow, orderBy, ascending,
 }) {
-  const { sites, activeSites, siteName, siteFilter } = useAppData();
-  const { canEdit, locks } = useAuth();
-  const { rows, loading, error: loadError, add, update, remove } = useRecords(table, {
-    orderBy: fields.some((f) => f.key === 'date') ? 'date' : 'created_at',
+  const { activeSites, siteName, siteFilter } = useAppData();
+  const { canEdit, canChangeRow, locks } = useAuth();
+  const hasDate = fields.some((f) => f.key === 'date');
+  const { rows, loading, error: loadError, add, update, remove, hasMore, loadMore } = useRecords(table, {
+    orderBy: orderBy ?? (hasDate ? 'date' : 'created_at'),
+    ascending: ascending ?? false,
+    filters: filterField ? [[filterField, 'eq', siteFilter]] : [],
   });
 
   const [open, setOpen] = useState(false);
@@ -48,13 +54,8 @@ export default function RecordManager({
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState(null);
 
-  const editable = canEdit(module);
-  const locked = !!locks[module];
-
-  const visible = useMemo(
-    () => (siteFilter && filterField ? rows.filter((r) => r[filterField] === siteFilter) : rows),
-    [rows, siteFilter, filterField]
-  );
+  const editable = canEdit(module.key);
+  const locked = !!locks[module.key];
 
   async function submit(e) {
     e.preventDefault();
@@ -104,8 +105,10 @@ export default function RecordManager({
     key: c.key,
     label: c.label,
     value: (r) =>
-      c.type === 'site' ? siteName(r[c.key])
-      : c.type === 'photos' ? (r[c.key]?.length ? r[c.key].join(' | ') : '')
+      c.value ? c.value(r)
+      : c.type === 'site' ? siteName(r[c.key])
+      : c.type === 'photos' || c.type === 'tags' ? (r[c.key]?.length ? r[c.key].join(' | ') : '')
+      : c.type === 'bool' ? (r[c.key] === false ? 'No' : 'Yes')
       : r[c.key] ?? '',
   }));
 
@@ -116,7 +119,7 @@ export default function RecordManager({
         subtitle={subtitle}
         icon={module.icon}
         accent={module.accent}
-        action={<ExportButton filename={`${table}.csv`} columns={exportCols} rows={visible} />}
+        action={<ExportButton filename={`${table}.csv`} columns={exportCols} rows={rows} />}
       />
 
       <LockBanner locked={locked} readOnly={!editable && !locked} />
@@ -135,10 +138,11 @@ export default function RecordManager({
       </FormShell>
 
       {loadError && <div className="text-xs mb-3" style={{ color: THEME.red }}>{loadError}</div>}
+      {!open && error && <div className="text-xs mb-3" style={{ color: THEME.red }}>{error}</div>}
 
       {loading ? (
         <Loading />
-      ) : visible.length === 0 ? (
+      ) : rows.length === 0 ? (
         <TableWrap>
           <tbody>
             <tr>
@@ -155,18 +159,18 @@ export default function RecordManager({
         <>
           {/* Phone: stacked cards. Desktop: table. */}
           <div className="space-y-3 md:hidden">
-            {visible.map((r) => (
+            {rows.map((r) => (
               <div key={r.id} className="p-4 rounded-xl" style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }}>
                 <div className="flex justify-between items-start gap-2">
                   <div className="min-w-0">
                     <div className="font-semibold text-sm truncate" style={{ fontFamily: 'Oswald', letterSpacing: '0.02em' }}>
-                      {r[columns[2]?.key] || r[columns[1]?.key] || '—'}
+                      {cardTitle(r, columns)}
                     </div>
                     <div className="text-xs mt-0.5" style={{ color: THEME.textDim }}>
-                      {fmtDate(r.date)} · {siteName(r.site_id)}
+                      {[r.date ? fmtDate(r.date) : null, r.site_id ? siteName(r.site_id) : null].filter(Boolean).join(' · ')}
                     </div>
                   </div>
-                  {editable && !locked && (
+                  {editable && !locked && canChangeRow(r) && (
                     <div className="flex items-center gap-1 shrink-0">
                       <IconBtn icon={Pencil} title="Edit" onClick={() => startEdit(r)} />
                       <DeleteBtn onDelete={() => del(r.id)} />
@@ -196,7 +200,7 @@ export default function RecordManager({
                 </tr>
               </thead>
               <tbody>
-                {visible.map((r) => (
+                {rows.map((r) => (
                   <tr key={r.id} className="border-t" style={{ borderColor: THEME.border }}>
                     {columns.map((c) => (
                       <Td key={c.key}>
@@ -205,7 +209,7 @@ export default function RecordManager({
                     ))}
                     <Td>
                       <div className="flex items-center justify-end gap-1">
-                        {editable && !locked && (
+                        {editable && !locked && canChangeRow(r) && (
                           <>
                             <IconBtn icon={Pencil} title="Edit" onClick={() => startEdit(r)} />
                             <DeleteBtn onDelete={() => del(r.id)} />
@@ -218,6 +222,7 @@ export default function RecordManager({
               </tbody>
             </TableWrap>
           </div>
+          <LoadMore hasMore={hasMore} onClick={loadMore} />
         </>
       )}
 
@@ -227,11 +232,7 @@ export default function RecordManager({
         {editForm && (
           <form onSubmit={submitEdit} className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
             <FormFields fields={fields} form={editForm} setForm={setEditForm} sites={activeSites} table={table} />
-            {editError && (
-              <div className="sm:col-span-2 text-xs px-3 py-2 rounded-lg" style={{ color: THEME.red, background: 'rgba(215,38,61,0.1)' }}>
-                {editError}
-              </div>
-            )}
+            <FormError error={editError} />
             <div className="sm:col-span-2 flex gap-2 justify-end pt-1">
               <Btn type="button" variant="subtle" onClick={() => setEditingId(null)}>Cancel</Btn>
               <Btn type="submit" accent={module.accent} disabled={editSaving}>{editSaving ? 'Saving…' : 'Save'}</Btn>
@@ -247,6 +248,12 @@ export default function RecordManager({
 
 const DYNAMIC_PROPS = ['type', 'options', 'required', 'placeholder', 'hint', 'min'];
 
+function cardTitle(r, columns) {
+  const textCol = columns.find((c) => !c.type || c.type === 'status');
+  const v = textCol ? r[textCol.key] : null;
+  return v === null || v === undefined || v === '' ? '—' : String(v);
+}
+
 /** The field with any form-dependent props evaluated against the current form. */
 function resolve(field, form) {
   const f = { ...field, hidden: field.visible ? !field.visible(form) : false };
@@ -260,6 +267,14 @@ function FormFields({ fields, form, setForm, sites, table }) {
   return fields.map((raw) => {
     const f = resolve(raw, form);
     if (f.hidden) return null;
+    if (f.type === 'checkbox') {
+      return (
+        <div key={f.key} className={f.full ? 'md:col-span-2 sm:col-span-2' : ''}>
+          <Toggle checked={form[f.key]} label={f.label} hint={f.hint}
+            onChange={(v) => setForm((p) => ({ ...p, [f.key]: v }))} />
+        </div>
+      );
+    }
     return (
       <Field key={f.key} label={f.label} required={f.required} full={f.full || f.type === 'photos'} hint={f.hint}>
         <FieldControl field={f} value={form[f.key]} sites={sites} table={table}
@@ -271,10 +286,13 @@ function FormFields({ fields, form, setForm, sites, table }) {
 
 function Cell({ row, col, siteName, onOpenPhoto }) {
   const v = row[col.key];
+  if (col.value) return col.value(row) ?? '—';
   if (col.type === 'site') return siteName(v);
   if (col.type === 'status') return <StatusBadge value={v} />;
   if (col.type === 'date') return fmtDate(v);
   if (col.type === 'photos') return <PhotoStrip photos={v || []} onOpen={onOpenPhoto} />;
+  if (col.type === 'tags') return v?.length ? v.join(', ') : '—';
+  if (col.type === 'bool') return v === false ? 'No' : 'Yes';
   return v === null || v === undefined || v === '' ? '—' : String(v);
 }
 
@@ -316,7 +334,7 @@ function FieldControl({ field, value, onChange, sites, table }) {
       return <PhotoInput value={value || []} onChange={onChange} folder={table} max={field.max ?? 6}
         accept={field.accept ?? 'image/*'} label={field.accept?.includes('pdf') ? 'Add photo / PDF' : undefined} />;
     default:
-      return <Input type={field.type || 'text'} value={v} required={field.required}
+      return <Input type={field.type === 'tags' ? 'text' : field.type || 'text'} value={v} required={field.required}
         min={field.min} step={field.step} inputMode={field.type === 'number' ? 'decimal' : undefined}
         placeholder={field.placeholder} onChange={(e) => onChange(e.target.value)} />;
   }
@@ -328,6 +346,7 @@ function blank(fields) {
     o[f.key] = f.default !== undefined
       ? (typeof f.default === 'function' ? f.default() : f.default)
       : f.type === 'photos' ? []
+      : f.type === 'checkbox' ? false
       : f.type === 'date' && f.key === 'date' ? today()
       : '';
   });
@@ -339,7 +358,10 @@ function fromRecord(record, fields, fromRow) {
   const o = {};
   fields.forEach((f) => {
     const v = record[f.key];
-    o[f.key] = f.type === 'photos' ? (v || []) : (v ?? '');
+    o[f.key] = f.type === 'photos' ? (v || [])
+      : f.type === 'tags' ? (v ?? []).join(', ')
+      : f.type === 'checkbox' ? v !== false
+      : (v ?? '');
   });
   return fromRow ? fromRow(o, record) : o;
 }
@@ -354,6 +376,8 @@ function clean(form, fields, toRow) {
     const f = resolve(raw, form);
     const v = form[f.key];
     if (f.type === 'photos') out[f.key] = v || [];
+    else if (f.type === 'tags') out[f.key] = String(v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    else if (f.type === 'checkbox') out[f.key] = !!v;
     else if (f.hidden || v === '' || v === undefined) out[f.key] = null;
     else if (f.type === 'number') out[f.key] = Number(v);
     else out[f.key] = v;

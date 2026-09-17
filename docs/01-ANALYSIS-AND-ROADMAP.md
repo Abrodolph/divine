@@ -1,16 +1,37 @@
 # Gridwatch — Analysis, Options and Roadmap
 
-*Written 2026-09-05 against commit `8bbe428` plus the uncommitted Aadhaar change.*
+*Written 2026-09-05 against commit `8bbe428` plus the uncommitted Aadhaar change. Updated 2026-09-13 against commit `963be12` — see "Changes since" below; the rest of the document has been corrected in place where it no longer matched.*
 
-This document is the thinking. The companion `02-CLAUDE-CODE-PROMPTS.md` is the doing: one ready-to-paste prompt per roadmap phase.
+This document is the thinking. The companion `02-CLAUDE-CODE-PROMPTS.md` is the doing: one ready-to-paste prompt per roadmap phase. `checklist.md` is the agreed scope for the current revamp.
+
+**Status (2026-09-13):** the `v1` branch implements the checklist — Phases 1–4 (without Supabase CLI migrations), Phase 6 procurement v1, and the Phase 7 document vault. See `checklist.md` for what's done and `V1-UPGRADE.md` for applying it.
+
+---
+
+## Changes since (8bbe428 → 963be12)
+
+| Change | Effect on this document |
+|---|---|
+| **Payroll merged into Team** (`Payroll.jsx` deleted; roster + payroll on one screen, one `team` permission; `/payroll` redirects) | S2 still stands — the formula now lives in `Team.jsx` and still disagrees with the Register. |
+| **Site Indent removed**, merged into Site Requirements (`indents` table dropped; `/indents` redirects). Requirements gained `unit`, `dimension`, `required_by` and a catalogue (`REQUIREMENT_CATALOG` from `public/SITE REQUIREMENT TAB.xlsx`) with per-item size dropdowns. | S3 is half-done: no more overlap, but still no approval/vendor/quote/PO/GRN. The catalogue is a seed for the Phase 6 item master. |
+| **Site Photos module removed** (`site_photos` table dropped). | One fewer log; progress photos live on DPR/other records. |
+| **Edit for RecordManager logs** (pencil → modal) on DPR, Requirements, Rework, etc. | §2.3 "RecordManager has no edit" is fixed. Edits still have no audit trail (S6). |
+| **PDF uploads** for Test Certificates (`uploadAttachment(s)`). | Adds PDFs to the public bucket — makes B3 slightly more relevant. |
+| **Worker passport photo** on `employees.photo`; **Aadhaar** column added and shown in full on the Team list. | B2 confirmed and now also covers face photos. |
+| **Salary Paid/Due status** (`salary_payments`, one row per worker per month, toggled from Team or Register). | Partial answer to "no paid record" — but no amount, mode, partial or weekly payouts (Phase 3 `payroll_payments` still needed). |
+| **Salary override is a full-month target** that the Register prorates by working days elapsed. | Wage-history workaround (§5.2 `employee_rates`) is still the proper fix. |
+| **Prototype `gridwatch (1).jsx` deleted.** | §2.4 and Appendix B item 7 done. |
+| Repo now 7 commits, ~5,500 lines incl. schema; 20 tables; 13 modules + Dashboard + Admin; 8 bespoke screens. | §1 updated. |
+
+Still open from §2.2 as of `963be12`: B1 (UTC `today()`), B2, B3 (public bucket, any user can delete any file), B4 (`created_by` from client — only `salary_payments` defaults it), B5, B6, B7, B8, and the Dashboard site-filter bug.
 
 ---
 
 ## 0. TL;DR
 
-1. **Keep the stack, revamp the data layer.** React + Vite + Supabase as a PWA is the right choice for a no-server, free-tier, phone-first tool for Indian construction sites. The 5,300 lines of frontend are small, coherent and mostly worth keeping. What needs rethinking is the *schema and the money logic*, not the framework.
+1. **Keep the stack, revamp the data layer.** React + Vite + Supabase as a PWA is the right choice for a no-server, free-tier, phone-first tool for Indian construction sites. The ~5,000 lines of frontend are small, coherent and mostly worth keeping. What needs rethinking is the *schema and the money logic*, not the framework.
 2. **Attendance is stored the wrong way for the business you describe.** One row per site per day with a `uuid[]` of present workers cannot represent in/out times, half days, overtime, a worker moving between two sites in one day, or who verified what. Normalise to one row per worker per day *before* anything else is built on top of it.
-3. **There are two payroll formulas that disagree.** Payroll pays a Monthly worker their full wage regardless of days; the Attendance Register prorates them by working days. One payroll engine, pure function, unit-tested, used by both screens.
+3. **There are two payroll formulas that disagree.** Team's payroll section pays a Monthly worker their full wage regardless of days; the Attendance Register prorates them by working days. One payroll engine, pure function, unit-tested, used by both screens.
 4. **Procurement should start as a workflow with humans doing the calling, and only then add vendor automation.** Item master, vendor master, price history and a comparative statement are worth more on day one than a vendor portal nobody logs into. Vendor notification via WhatsApp/email magic links comes next; vendor logins come last, if ever.
 5. **"Documentation" is two things**: a document vault with expiry alerts (licences, insurance, NOCs, test certs, worker IDs) and generated documents (challans, payslips, POs, RFQs, DPR PDFs). Both are needed; the vault is easier and higher value first.
 6. **Ship in checkpoints, each gated by real use at your uncle's sites**, not by "the feature is coded". The roadmap below has 10 phases; each has an explicit exit test.
@@ -27,15 +48,15 @@ This document is the thinking. The companion `02-CLAUDE-CODE-PROMPTS.md` is the 
 
 ```
 divine engineering/
-├── CLAUDE.md                 workspace note
-├── gridwatch (1).jsx         old single-file prototype — archive it (see §2.4)
-└── gridwatch/                the real app, its own git repo (3 commits)
+└── gridwatch/                the real app, its own git repo (7 commits)
+    ├── CLAUDE.md
+    ├── docs/                 this analysis, phase prompts, CHECKLIST.md
     ├── supabase/schema.sql   entire DB: 20 tables, RLS, storage, realtime — hand-pasted
     └── src/
-        ├── config/modules.js    nav + permission registry (16 modules)
-        ├── config/fields.js     form/table defs for 7 "plain log" modules
-        ├── components/RecordManager.jsx   generic log screen
-        ├── modules/*.jsx        11 bespoke screens
+        ├── config/modules.js    nav + permission registry (13 modules + Dashboard, Admin)
+        ├── config/fields.js     form/table defs for 7 "plain log" modules + requirement catalogue
+        ├── components/RecordManager.jsx   generic log screen (add/edit/delete/CSV)
+        ├── modules/*.jsx        8 bespoke screens (Team now includes payroll)
         ├── context/             Auth (roles, locks), AppData (sites, employees, site filter)
         └── hooks/useRecords.js  load + realtime + add/update/remove
 ```
@@ -52,7 +73,7 @@ divine engineering/
 
 ### 1.3 The data model in one paragraph
 
-`sites` and `employees` are masters. `attendance` is one row per site per day holding `present_ids uuid[]` and `present_times jsonb`. `dpr`, `requirements`, `material_received`, `site_photos`, `transport`, `mtc`, `drawings`, `rework` are flat logs. `indents` and `challans` hold `items jsonb` and get auto-numbers. Money: `advances` (per employee), `working_days` (per site per month), `salary_adjustments` (per employee per month override), `payroll_runs` (snapshot jsonb). Auth: `profiles` → `roles` (permissions jsonb) and `module_locks`.
+`sites` and `employees` are masters. `attendance` is one row per site per day holding `present_ids uuid[]` and `present_times jsonb`. `dpr`, `requirements` (catalogue item + dimension + unit + need-by date), `material_received`, `transport`, `mtc` (photos or PDFs), `drawings`, `rework` are flat logs. `challans` holds `items jsonb` and gets auto-numbers. Money: `advances` (per employee), `working_days` (per site per month), `salary_adjustments` (per employee per month full-month override), `salary_payments` (Paid/Due per employee per month), `payroll_runs` (snapshot jsonb). `employees` carries `photo` and plain-text `aadhaar`. Auth: `profiles` → `roles` (permissions jsonb) and `module_locks`.
 
 ---
 
@@ -65,8 +86,8 @@ Ordered by how much it will hurt if left alone.
 | # | Issue | Why it matters | Fix |
 |---|---|---|---|
 | S1 | `attendance.present_ids uuid[]` + `present_times jsonb` | Cannot record out-time, hours, half-day, OT, late flag, per-worker photo, per-worker verification, or the same worker at two sites in a day. Payroll has to scan every muster and `includes()` per worker. Cannot index by worker. | New `attendance_entries` table: one row per worker per site per day with in/out, units, status, verified_by. Keep a `musters` header row for the group photo/GPS. |
-| S2 | Two payroll formulas | `Payroll.jsx` pays Monthly workers the full wage regardless of attendance; `AttendanceRegister.jsx` prorates by working days. For Daily workers, Payroll = rate × days; Register = (rate × total_days / total_days) × min(days, elapsed). These produce different numbers for the same worker in the same month. Your uncle will notice. | One `computePayroll()` pure function in `src/lib/payroll.js`, driven by a `payroll_rules` config row, used by both screens, unit-tested. |
-| S3 | `requirements` and `indents` overlap | Both are "site needs X". Neither has approval, vendor, quote, PO, or GRN. | Merge into a single `purchase_requests` flow (§5.3). |
+| S2 | Two payroll formulas | Team's payroll section (`Team.jsx`, formerly `Payroll.jsx`) pays Monthly workers the full wage regardless of attendance; `AttendanceRegister.jsx` prorates by working days. For Daily workers, Payroll = rate × days; Register = (rate × total_days / total_days) × min(days, elapsed). These produce different numbers for the same worker in the same month. Your uncle will notice. | One `computePayroll()` pure function in `src/lib/payroll.js`, driven by a `payroll_rules` config row, used by both screens, unit-tested. |
+| S3 | ~~`requirements` and `indents` overlap~~ Indents merged into Requirements (2026-09-11) | Requirements still has no approval, vendor, quote, PO, or GRN. | Evolve into a `purchase_requests` flow (§5.3); seed `items` from the requirement catalogue. |
 | S4 | No migrations tooling | `schema.sql` with `add column if not exists` scattered inside `create table` blocks works for one dev but every schema change is a hand-paste with no record of what is live where. | Supabase CLI: `supabase/migrations/*.sql`, `supabase db push`, `supabase db diff`. Keep `schema.sql` only as generated output. |
 | S5 | No tests, no lint | Payroll and attendance are money. | Vitest (engine), pgTAP (RLS), Playwright (3 flows), ESLint. |
 | S6 | No audit trail | Attendance is editable in place with no history. Disputes ("I was marked present, who removed me?") are unanswerable. | `audit_log` table filled by a generic trigger on money/attendance tables. |
@@ -78,7 +99,7 @@ Ordered by how much it will hurt if left alone.
 | # | Issue | Detail |
 |---|---|---|
 | B1 | **UTC date bug** | `today()` and `thisMonth()` in `src/lib/format.js` use `toISOString()`, which is UTC. Between 00:00 and 05:30 IST they return *yesterday* (and on the 1st, *last month*). Night shifts and early musters will land on the wrong day. Use local date parts. |
-| B2 | **Aadhaar readable by every logged-in user** | `employees.aadhaar` is plain text under a `select ... using (true)` policy. A Viewer can export the full roster with Aadhaar numbers. Under the DPDP Act 2023 and UIDAI guidance this is a liability. Move to a separate `employee_documents` table with admin/HR-only read, store masked (last 4) in `employees`, or encrypt with `pgsodium`. |
+| B2 | **Aadhaar readable by every logged-in user** | `employees.aadhaar` is plain text under a `select ... using (true)` policy, and the Team list shows it in full. Worker passport photos (`employees.photo`) sit in the public bucket. A Viewer can export the full roster with Aadhaar numbers. Under the DPDP Act 2023 and UIDAI guidance this is a liability. Move to a separate `employee_documents` table with admin/HR-only read, store masked (last 4) in `employees`, or encrypt with `pgsodium`. |
 | B3 | **Public storage bucket** | `uploads` is `public = true`; any URL is world-readable forever. Fine for progress photos, not for muster photos of identifiable people, challans with party details, or (later) ID documents. Add a second private bucket with signed URLs for anything personal. Also `uploads_delete` lets any authenticated user delete any object. |
 | B4 | **`created_by` set by the client** | `useRecords.add` inserts `created_by` from the browser. RLS does not enforce it equals `auth.uid()`. Use `default auth.uid()` on the column and drop it from the insert. |
 | B5 | **Floating workers can be paid twice** | Workers with no `site_id` appear in every site's roster. Register computes per site, so a floating worker present at Site A on the 3rd and Site B on the 4th shows correct per site, but one marked at *both* sites on the same day is one day in Payroll (distinct dates) and two days across two Registers. Normalised attendance with a `(employee_id, date)` uniqueness rule (or explicit half-day split) fixes this. |
@@ -89,14 +110,14 @@ Ordered by how much it will hurt if left alone.
 ### 2.3 Minor / style
 
 - Free-text `marked_by`, `raised_by`, `reported_by`, `received_by` instead of `profile_id` references: weakens audit and reporting. Keep the text for display but add the FK.
-- `Payroll.jsx` and `AttendanceRegister.jsx` each duplicate `nextMonthStart`, `Info`, `Line`. Extract to `lib/dates.js` / `components/ui.jsx`.
-- `RecordManager` has no edit; deleting-and-re-entering with a gap-free document number is fine, but for DPR/rework it loses the original timestamp. Add edit with audit rather than special-casing.
-- The Dashboard fetches with `limit(5)` and then filters by site client-side, so with a site filter set it may show nothing even when data exists. Push the filter into the query.
+- `Team.jsx` (payroll section) and `AttendanceRegister.jsx` each duplicate month/date helpers and the payroll maths. Extract to `lib/dates.js` / `lib/payroll.js`.
+- ~~`RecordManager` has no edit~~ — edit via modal added 2026-09-11. Still needs an audit trail (S6).
+- The Dashboard (still, as of `963be12`) fetches with `limit(5)` and then filters by site client-side, so with a site filter set it may show nothing even when data exists. Push the filter into the query.
 - Realtime subscriptions refetch the whole table on any change. Acceptable now; note it.
 
 ### 2.4 The prototype file
 
-`gridwatch (1).jsx` is fully superseded. Nothing in it is missing from the real app except a per-punch attendance model (`type: in/out`, `time`) which, ironically, is closer to what you need than the current muster. Move it to `gridwatch/docs/archive/` or delete it.
+**Done — deleted.** `gridwatch (1).jsx` was fully superseded. The only idea worth keeping from it was a per-punch attendance model (`type: in/out`, `time`), which is what §5.1 proposes anyway.
 
 ---
 
@@ -122,8 +143,8 @@ A fire-protection contractor (sprinklers, hydrants, pump rooms, fire alarm, some
 | Process | Today (app) | Pain | Automation value | Effort | Phase |
 |---|---|---|---|---|---|
 | **Attendance → wages** | Muster per site/day | Trust in supervisor, no hours, disputes, double-pay | Very high | Medium | 2, 3 |
-| **Weekly advances, monthly payroll, payslips, payments** | Partial | Two formulas, no payslip, no "paid" record | Very high | Medium | 3 |
-| **Site → office material request → vendor → delivery** | Two overlapping logs | Everything on phone calls and WhatsApp; no price memory | Very high | High | 6 |
+| **Weekly advances, monthly payroll, payslips, payments** | Partial (Paid/Due flag per month) | Two formulas, no payslip, no amount/mode/partial payment record | Very high | Medium | 3 |
+| **Site → office material request → vendor → delivery** | Requirements log with item catalogue | Everything on phone calls and WhatsApp; no price memory | Very high | High | 6 |
 | Item & vendor master, price history | None | Re-quoting the same GI pipe every month | High | Low | 6 |
 | Material received (GRN) vs indent vs PO | GRN log only | No reconciliation, short deliveries unnoticed | High | Medium | 6 |
 | Site stock / consumption / theft | None | Pipes and fittings walk | High | Medium | 9 |
@@ -259,7 +280,7 @@ goods_receipts   (replaces material_received) po_id nullable, site_id, items jso
                  qty_received/qty_rejected, photos, challan_ref, received_by
 ```
 
-`requirements` and `indents` both migrate into `purchase_requests`. `material_received` becomes `goods_receipts` with an optional PO link so short deliveries are visible.
+`requirements` migrates into `purchase_requests` (`indents` is already gone), and `REQUIREMENT_CATALOG` seeds `items`. `material_received` becomes `goods_receipts` with an optional PO link so short deliveries are visible.
 
 #### Vendor interaction options
 
@@ -370,7 +391,7 @@ Each phase has: scope, out of scope, **exit test** (the checkpoint), and what mu
 - Fix B1 (local dates), B2 (Aadhaar restricted), B3 (private bucket + delete policy), B4 (`created_by default auth.uid()`), B6 (site lat/lng/radius), B7 (site settings for required photo/GPS/edit window).
 - Add `orgs` + `org_id` everywhere + `current_org()` in RLS (S8).
 - Add `audit_log` with a generic trigger on attendance, advances, salary_adjustments, payroll_runs, employees (S6).
-- Archive the prototype file. Update `CLAUDE.md` for the new workflow.
+- ~~Archive the prototype file~~ (done). Update `CLAUDE.md` for the new workflow.
 - **Exit test**: `npm run lint && npm test` green; pgTAP proves a Viewer cannot write and cannot read Aadhaar; a punch outside the site radius is flagged; the pilot site keeps working with no visible change.
 
 ### Phase 2 — Attendance v2
@@ -404,7 +425,7 @@ Each phase has: scope, out of scope, **exit test** (the checkpoint), and what mu
 
 ### Phase 6 — Procurement v1
 
-- Items, vendors, vendor_items, purchase_requests (+items), approvals, quotes (manual entry), comparative statement, purchase_orders, goods_receipts; migrate `requirements`, `indents`, `material_received`.
+- Items, vendors, vendor_items, purchase_requests (+items), approvals, quotes (manual entry), comparative statement, purchase_orders, goods_receipts; migrate `requirements` and `material_received`.
 - Site screen: raise request (pick from catalogue or free text, photo), see status. Office screen: queue, approve, record quotes, compare, create PO (PDF), track delivery. Site: GRN against PO with shortages.
 - Reorder shortcut for catalogued items with a valid last price.
 - **Exit test**: 20 real requests go through the full flow; the owner approves from the phone; the office stops using WhatsApp for indents (ask them); price history exists for the top 30 items.
@@ -555,7 +576,7 @@ Phase 4  profile_sites
 Phase 5  notifications, notification_templates, magic_tokens
 Phase 6  items, vendors, vendor_items, purchase_requests, purchase_request_items,
          approvals, approval_rules, quotes, purchase_orders, goods_receipts
-         (replaces requirements, indents, material_received)
+         (replaces requirements, material_received; indents already dropped)
 Phase 7  rfqs, documents, document_categories
 Phase 8  face_enrolments (embeddings, consent)  if adopted
 Phase 9  stock_movements, assets, asset_movements, expenses, permits, incidents
@@ -566,8 +587,8 @@ Phase 10 plans, subscriptions, org_features, invites
 
 1. `format.js`: local-date `today()`/`thisMonth()`.
 2. `sites`: `lat`, `lng`, `radius_m`; Sites screen captures GPS like Attendance does.
-3. Aadhaar: move to `employee_documents` with admin/HR read; show last 4 in Team.
-4. Storage: create `private` bucket; muster photos go there; signed URLs in Attendance; tighten `uploads_delete` to owner or admin.
-5. `created_by uuid default auth.uid()` on all tables; remove from client inserts.
+3. Aadhaar: move to `employee_documents` with admin/HR read; show last 4 in Team (currently shown in full).
+4. Storage: create `private` bucket; muster photos, worker photos and PDFs with party details go there; signed URLs; tighten `uploads_delete` to owner or admin.
+5. `created_by uuid default auth.uid()` on all tables (only `salary_payments` has it today); remove from client inserts.
 6. Dashboard: push site filter into the queries.
-7. Archive `gridwatch (1).jsx`.
+7. ~~Archive `gridwatch (1).jsx`~~ — done (deleted).

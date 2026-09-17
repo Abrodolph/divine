@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { Menu, X, LogOut, Filter, Flame, Zap } from 'lucide-react';
 import { THEME } from '../lib/theme';
-import { HazardBar } from './ui';
+import { HazardBar, Loading } from './ui';
 import { useAuth } from '../context/AuthContext';
 import { useAppData } from '../context/AppDataContext';
-import { MODULES, GROUPS, DASHBOARD, ADMIN } from '../config/modules';
+import { SCREENS, GROUPS, DASHBOARD, ADMIN } from '../config/modules';
 
 export default function Layout() {
   const { profile, role, canView, isAdmin, signOut } = useAuth();
@@ -13,7 +13,7 @@ export default function Layout() {
   const [navOpen, setNavOpen] = useState(false);
   const location = useLocation();
 
-  const allowed = MODULES.filter((m) => canView(m.key));
+  const allowed = SCREENS.filter((m) => canView(m.key));
   const quick = [DASHBOARD, ...allowed].slice(0, 5);
 
   return (
@@ -142,7 +142,9 @@ export default function Layout() {
 
         {/* ----------------------------- main ----------------------------- */}
         <main className="flex-1 min-w-0 p-4 md:p-8 pb-24 md:pb-8 max-w-5xl mx-auto w-full">
-          <Outlet key={location.pathname} />
+          <Suspense fallback={<Loading />}>
+            <Outlet key={location.pathname} />
+          </Suspense>
         </main>
       </div>
 

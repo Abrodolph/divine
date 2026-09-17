@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Printer } from 'lucide-react';
 import { THEME } from '../lib/theme';
 import { today, fmtDate } from '../lib/format';
@@ -7,19 +7,20 @@ import { useRecords } from '../hooks/useRecords';
 import { useAppData } from '../context/AppDataContext';
 import { useAuth } from '../context/AuthContext';
 import { moduleByKey } from '../config/modules';
-import { COMPANY } from '../config/company';
 import ItemsEditor, { emptyItems, itemsSummary } from '../components/ItemsEditor';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, Card, Field, Input, TextArea,
-  SiteSelect, DeleteBtn, ExportButton, FormShell, Btn,
+  SiteSelect, DeleteBtn, ExportButton, FormShell, Btn, LoadMore,
 } from '../components/ui';
 
 const MODULE = moduleByKey('challans');
 
 export default function Challans() {
   const { activeSites, siteName, siteFilter } = useAppData();
-  const { canEdit, locks } = useAuth();
-  const { rows, loading, add, remove } = useRecords('challans', { orderBy: 'date' });
+  const { canEdit, canChangeRow, locks } = useAuth();
+  const { rows, loading, add, remove, hasMore, loadMore } = useRecords('challans', {
+    orderBy: 'date', filters: [['site_id', 'eq', siteFilter]],
+  });
 
   const blank = {
     date: today(), site_id: siteFilter || '', party: '', party_address: '', party_gstin: '', po_no: '',
@@ -36,10 +37,7 @@ export default function Challans() {
   const locked = !!locks.challans;
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
-  const visible = useMemo(
-    () => (siteFilter ? rows.filter((r) => r.site_id === siteFilter) : rows),
-    [rows, siteFilter]
-  );
+  const visible = rows;
   const printRecord = rows.find((r) => r.id === printId);
 
   async function submit(e) {
@@ -50,7 +48,8 @@ export default function Challans() {
     setSaving(true);
     setError(null);
     try {
-      const { data: docNo } = await supabase.rpc('next_doc_no', { p_prefix: 'DC' });
+      const { data: docNo, error: numErr } = await supabase.rpc('next_doc_no', { p_prefix: 'DC' });
+      if (numErr) throw numErr;
       const rec = await add({ ...form, items: cleanItems, doc_no: docNo });
       setForm({ ...blank, site_id: form.site_id });
       setItems(emptyItems());
@@ -164,7 +163,7 @@ export default function Challans() {
                   >
                     <Printer size={14} /> {printId === r.id ? 'Hide' : 'Print'}
                   </button>
-                  {editable && !locked && <DeleteBtn onDelete={() => remove(r.id).catch((x) => setError(x.message))} />}
+                  {editable && !locked && canChangeRow(r) && <DeleteBtn onDelete={() => remove(r.id).catch((x) => setError(x.message))} />}
                 </div>
               </div>
               <ul className="mt-3 text-sm space-y-1">
@@ -172,6 +171,7 @@ export default function Challans() {
               </ul>
             </Card>
           ))}
+          <LoadMore hasMore={hasMore} onClick={loadMore} />
         </div>
       )}
 
@@ -182,6 +182,7 @@ export default function Challans() {
 }
 
 function ChallanPrint({ record, siteName }) {
+  const { company: COMPANY } = useAppData();
   return (
     <div className="print-area mt-6 p-6 sm:p-8 rounded-xl bg-white text-black">
       <div className="flex justify-between items-start border-b-2 border-black pb-3 mb-4 gap-4">

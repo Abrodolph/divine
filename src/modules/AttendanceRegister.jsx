@@ -1,569 +1,280 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Printer } from 'lucide-react';
 import { THEME } from '../lib/theme';
-import { inr, fmtDate, monthLabel, thisMonth, today } from '../lib/format';
 import { supabase } from '../lib/supabase';
+import { inr, fmtDate, monthLabel, thisMonth } from '../lib/format';
+import { daysInMonth, defaultAsOf, monthEnd, weekday } from '../lib/dates';
+import { computePayroll, payrollTotals } from '../lib/payroll';
+import { exportCSV } from '../lib/csv';
+import { friendly } from '../hooks/useRecords';
+import { usePayrollInputs } from '../hooks/usePayrollInputs';
 import { useAppData } from '../context/AppDataContext';
 import { useAuth } from '../context/AuthContext';
 import { moduleByKey } from '../config/modules';
+import PaymentsBox from '../components/PaymentsBox';
+import { PrintSheet } from '../components/Print';
 import {
-  SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, Field, Input, SiteSelect,
-  TableWrap, Th, Td, Banner, Modal, PayStatusToggle,
+  SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, Input, SiteSelect, Banner, Modal, Line, Info,
+  ToolbarInput, Chip,
 } from '../components/ui';
-import { setSalaryStatus } from '../lib/salaryPayments';
 
 const MODULE = moduleByKey('attendance_register');
+const CODE_COLOR = { P: THEME.green, H: THEME.amber, A: THEME.red, L: THEME.blue, WO: THEME.textDim, HOL: THEME.textDim };
+const WD = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 /**
- * One site, one month: every worker on that site's roster, how many days
- * they were marked present, and — once Admin sets how many working days the
- * month had — what that's actually worth in pay.
- *
- * "Payable" here is attendance x rate only, independent of Payroll's saved
- * runs: the per-day rate (from the full month's working days x wage) times
- * however many of those working days have actually elapsed by the chosen
- * "calculate as of" date — not the whole month — so a weekly payout partway
- * through the month isn't docked pay for days that haven't happened yet.
- * Advances are shown for context in the breakdown but aren't this screen's
- * job to settle — that's what Payroll does.
+ * One site, one month: a calendar grid of every worker's days (P / H / A / L /
+ * WO / HOL), and what that's worth so far. The pay columns come from the
+ * payroll engine (src/lib/payroll.js) with "as of" = the chosen date, so a
+ * weekly payout pays only for days that have happened. Payments recorded here
+ * are the same payroll_payments Payroll sees.
  */
 export default function AttendanceRegister() {
-  const { activeSites, activeEmployees, siteFilter } = useAppData();
-  const { canEdit, locks } = useAuth();
+  const { activeSites, employees, siteFilter, rules, siteSettings } = useAppData();
+  const { canEdit, canView, locks } = useAuth();
   const editable = canEdit('attendance_register');
   const locked = !!locks.attendance_register;
+  const canPay = canEdit('attendance_register') || canEdit('payroll');
 
   const [siteId, setSiteId] = useState(siteFilter || '');
   const [month, setMonth] = useState(thisMonth());
   const [asOf, setAsOf] = useState(() => defaultAsOf(thisMonth()));
-  const [attendance, setAttendance] = useState([]);
-  const [advances, setAdvances] = useState([]);
-  const [adjustments, setAdjustments] = useState([]);
-  const [payments, setPayments] = useState([]);
-  const [payingId, setPayingId] = useState(null);
-  const [workingDays, setWorkingDays] = useState(null);
-  const [totalDaysInput, setTotalDaysInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [savingOverride, setSavingOverride] = useState(false);
+  const [wdInput, setWdInput] = useState('');
+  const [savingWd, setSavingWd] = useState(false);
   const [error, setError] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [printing, setPrinting] = useState(false);
 
-  useEffect(() => {
-    if (!siteId && activeSites.length) setSiteId(activeSites[0].id);
-  }, [activeSites, siteId]);
+  useEffect(() => { if (!siteId && activeSites.length) setSiteId(activeSites[0].id); }, [activeSites, siteId]);
+  useEffect(() => { setAsOf(defaultAsOf(month)); }, [month]);
 
-  // Switching months resets "as of" to a sensible default for that month —
-  // today if it's the current month, otherwise the last day of that month.
-  useEffect(() => {
-    setAsOf(defaultAsOf(month));
-  }, [month]);
+  const inputs = usePayrollInputs({ month, siteId, enabled: !!siteId });
+  const totalDays = inputs.workingDays[siteId] ?? null;
+  useEffect(() => { setWdInput(totalDays ? String(totalDays) : ''); }, [totalDays]);
 
-  // Same roster rule as the Attendance tick-list: assigned to this site, or unassigned.
-  const roster = useMemo(() => {
-    if (!siteId) return [];
-    return activeEmployees.filter((e) => e.site_id === siteId || !e.site_id);
-  }, [activeEmployees, siteId]);
+  const rows = useMemo(() => (siteId ? computePayroll({
+    employees, rates: inputs.rates, entries: inputs.entries, advances: inputs.advances,
+    adjustments: inputs.adjustments, payments: inputs.payments, workingDays: inputs.workingDays,
+    rules, month, asOf, siteId,
+  }) : []), [employees, inputs, rules, month, asOf, siteId]);
+  const totals = payrollTotals(rows);
 
-  useEffect(() => {
-    if (!siteId) return;
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      const start = `${month}-01`;
-      const end = nextMonthStart(month);
-      const [a, wd, adj, pay] = await Promise.all([
-        supabase.from('attendance').select('date,present_ids,present_times')
-          .eq('site_id', siteId).gte('date', start).lt('date', end),
-        supabase.from('working_days').select('*').eq('site_id', siteId).eq('month', month).maybeSingle(),
-        supabase.from('salary_adjustments').select('*').eq('month', month),
-        supabase.from('salary_payments').select('*').eq('month', month),
-      ]);
-      if (cancelled) return;
-      setPayments(pay.data ?? []);
-      if (a.error) setError(a.error.message);
-      else if (adj.error) setError(adj.error.message);
-      setAttendance(a.data ?? []);
-      setWorkingDays(wd.data ?? null);
-      setTotalDaysInput(wd.data?.total_days != null ? String(wd.data.total_days) : '');
-      setAdjustments(adj.data ?? []);
-      setLoading(false);
-    })();
-    return () => { cancelled = true; };
-  }, [siteId, month]);
-
-  // Advances are only needed for the popup breakdown, fetched for the visible roster.
-  useEffect(() => {
-    if (!roster.length) { setAdvances([]); return; }
-    let cancelled = false;
-    (async () => {
-      const start = `${month}-01`;
-      const end = nextMonthStart(month);
-      const { data, error: err } = await supabase.from('advances')
-        .select('employee_id,amount,date')
-        .in('employee_id', roster.map((e) => e.id))
-        .gte('date', start).lt('date', end);
-      if (cancelled) return;
-      if (err) setError(err.message);
-      setAdvances(data ?? []);
-    })();
-    return () => { cancelled = true; };
-  }, [roster, month]);
-
-  const totalDays = workingDays?.total_days ?? null;
-
-  // How many of the month's working days have actually happened by "as of",
-  // scaled from the calendar so a partial/weekly payout isn't compared
-  // against the full month's working-day count.
-  const dim = useMemo(() => daysInMonth(month), [month]);
-  const elapsedCalendarDays = useMemo(() => {
-    const d = Number(asOf.split('-')[2]) || dim;
-    return Math.min(Math.max(d, 1), dim);
-  }, [asOf, dim]);
-  const workingDaysElapsed = totalDays
-    ? (elapsedCalendarDays >= dim ? totalDays : Math.min(totalDays, Math.round((totalDays * elapsedCalendarDays) / dim)))
-    : null;
-
-  const rows = useMemo(() => roster.map((emp) => {
-    const dates = attendance
-      .filter((a) => (a.present_ids ?? []).includes(emp.id))
-      .map((a) => a.date)
-      .sort();
-    const daysPresent = dates.length;
-    const rate = Number(emp.wage_rate) || 0;
-
-    let fullPay = null, perDayRate = null, absentDays = null, deduction = null, payable = null;
-    if (totalDays > 0) {
-      fullPay = emp.wage_type === 'Monthly' ? rate : rate * totalDays;
-      perDayRate = fullPay / totalDays;
-      const effectiveDays = Math.min(daysPresent, workingDaysElapsed);
-      absentDays = Math.max(workingDaysElapsed - daysPresent, 0);
-      deduction = perDayRate * absentDays;
-      payable = perDayRate * effectiveDays;
-    }
-
-    const advanceTotal = advances
-      .filter((a) => a.employee_id === emp.id)
-      .reduce((s, a) => s + (Number(a.amount) || 0), 0);
-
-    // An override is a full-month target salary (e.g. a raise that took effect
-    // mid-month) — prorate it by days elapsed the same way the calculated
-    // payable is prorated, rather than paying the whole target amount before
-    // the month is over.
-    const override = adjustments.find((a) => a.employee_id === emp.id) ?? null;
-    const effectiveDays = totalDays > 0 ? Math.min(daysPresent, workingDaysElapsed) : null;
-    const overridePayable = override
-      ? (totalDays > 0 ? (Number(override.amount) / totalDays) * effectiveDays : Number(override.amount))
-      : null;
-    const finalPayable = override ? overridePayable : payable;
-    const payment = payments.find((p) => p.employee_id === emp.id) ?? null;
-
-    return {
-      employee_id: emp.id, name: emp.name, trade: emp.trade,
-      wage_type: emp.wage_type, rate, dates, daysPresent,
-      fullPay, perDayRate, absentDays, deduction, payable,
-      advanceTotal, netAfterAdvance: payable != null ? payable - advanceTotal : null,
-      override, finalPayable,
-      status: payment?.status ?? 'Due', paid_on: payment?.paid_on ?? null,
-    };
-  }), [roster, attendance, totalDays, workingDaysElapsed, advances, adjustments, payments]);
-
-  const selectedRow = rows.find((r) => r.employee_id === selectedId) ?? null;
-
-  async function saveOverride(employeeId, amount, note) {
-    setSavingOverride(true);
-    setError(null);
-    try {
-      const { data, error: err } = await supabase.from('salary_adjustments')
-        .upsert(
-          { employee_id: employeeId, month, amount, note: note || null, updated_at: new Date().toISOString() },
-          { onConflict: 'employee_id,month' }
-        )
-        .select()
-        .single();
-      if (err) throw err;
-      setAdjustments((prev) => [...prev.filter((a) => a.employee_id !== employeeId), data]);
-    } catch (err) {
-      setError(err.message || 'Could not save the adjustment.');
-    } finally {
-      setSavingOverride(false);
-    }
-  }
-
-  async function clearOverride(employeeId) {
-    setSavingOverride(true);
-    setError(null);
-    try {
-      const { error: err } = await supabase.from('salary_adjustments')
-        .delete().eq('employee_id', employeeId).eq('month', month);
-      if (err) throw err;
-      setAdjustments((prev) => prev.filter((a) => a.employee_id !== employeeId));
-    } catch (err) {
-      setError(err.message || 'Could not remove the adjustment.');
-    } finally {
-      setSavingOverride(false);
-    }
-  }
-
-  async function togglePaid(employeeId, status) {
-    setPayingId(employeeId);
-    setError(null);
-    try {
-      const data = await setSalaryStatus(employeeId, month, status);
-      setPayments((prev) => [...prev.filter((p) => p.employee_id !== employeeId), data]);
-    } catch (err) {
-      setError(err.message || 'Could not update payment status.');
-    } finally {
-      setPayingId(null);
-    }
-  }
+  const dim = daysInMonth(month);
+  const dates = Array.from({ length: dim }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
+  const offDay = siteSettings(siteId).weekly_off_day;
+  const selected = rows.find((r) => r.employee_id === selectedId) ?? null;
 
   async function saveWorkingDays(e) {
     e.preventDefault();
-    const n = Number(totalDaysInput);
-    if (!n || n < 1) { setError('Enter a valid number of working days.'); return; }
-    setSaving(true);
+    const n = Number(wdInput);
+    if (!n || n < 1 || n > 31) { setError('Enter the number of working days (1–31).'); return; }
+    setSavingWd(true);
     setError(null);
-    try {
-      const { data, error: err } = await supabase.from('working_days')
-        .upsert(
-          { site_id: siteId, month, total_days: n, updated_at: new Date().toISOString() },
-          { onConflict: 'site_id,month' }
-        )
-        .select()
-        .single();
-      if (err) throw err;
-      setWorkingDays(data);
-    } catch (err) {
-      setError(err.message || 'Could not save working days.');
-    } finally {
-      setSaving(false);
-    }
+    const { error: err } = await supabase.from('working_days')
+      .upsert({ site_id: siteId, month, total_days: n, updated_at: new Date().toISOString() }, { onConflict: 'site_id,month' });
+    setSavingWd(false);
+    if (err) setError(friendly(err));
+    else inputs.reload();
   }
+
+  function exportGrid() {
+    exportCSV(`register_${month}.csv`, [
+      { key: 'name', label: 'Worker' },
+      ...dates.map((d) => ({ key: d, label: d.slice(8), value: (r) => r.days.find((x) => x.date === d)?.code ?? '' })),
+      { key: 'days_present', label: 'Days' },
+      { key: 'ot_hours', label: 'OT h' },
+      { key: 'gross', label: 'Earned so far' },
+      { key: 'advances', label: 'Advances' },
+      { key: 'net', label: 'Net' },
+      { key: 'paid_so_far', label: 'Paid' },
+      { key: 'balance', label: 'Balance' },
+    ], rows);
+  }
+
+  const cellMap = (r) => Object.fromEntries(r.days.map((d) => [d.date, d]));
 
   return (
     <div>
-      <SectionHeader
-        title="Attendance Register"
-        subtitle="Days present per worker for a site and month, and what it's worth"
-        icon={MODULE.icon}
-        accent={MODULE.accent}
-      />
+      <SectionHeader title="Attendance Register" subtitle="The month at a glance for one site, and what's due so far" icon={MODULE.icon} accent={MODULE.accent}
+        action={siteId && (
+          <>
+            <Btn variant="ghost" onClick={exportGrid}>Export</Btn>
+            <Btn variant="ghost" icon={Printer} onClick={() => setPrinting(true)}>Print</Btn>
+          </>
+        )} />
 
       <LockBanner locked={locked} readOnly={!editable && !locked} />
 
-      <Card className="p-4 mb-6 flex flex-wrap items-end gap-4">
-        <div>
-          <label className="text-xs uppercase tracking-wide block mb-1.5" style={{ color: THEME.textDim }}>
-            Site
-          </label>
+      <Card className="p-4 mb-4 flex flex-wrap items-end gap-3">
+        <div className="min-w-[180px]">
+          <label className="text-xs uppercase tracking-wide block mb-1.5" style={{ color: THEME.textDim }}>Site</label>
           <SiteSelect sites={activeSites} value={siteId} onChange={(e) => setSiteId(e.target.value)} />
         </div>
+        <ToolbarInput label="Month" type="month" value={month} onChange={(e) => setMonth(e.target.value || thisMonth())} />
+        <ToolbarInput label="Pay as of" type="date" min={`${month}-01`} max={monthEnd(month)} value={asOf} onChange={(e) => setAsOf(e.target.value || defaultAsOf(month))} />
         <div>
-          <label className="text-xs uppercase tracking-wide block mb-1.5" style={{ color: THEME.textDim }}>
-            Month
-          </label>
-          <input
-            type="month"
-            className="bg-transparent border rounded-lg px-3 py-2.5 text-sm outline-none"
-            style={{ borderColor: THEME.border, color: THEME.text }}
-            value={month}
-            onChange={(e) => setMonth(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="text-xs uppercase tracking-wide block mb-1.5" style={{ color: THEME.textDim }}>
-            Calculate as of
-          </label>
-          <input
-            type="date"
-            min={`${month}-01`}
-            max={`${month}-${String(dim).padStart(2, '0')}`}
-            className="bg-transparent border rounded-lg px-3 py-2.5 text-sm outline-none"
-            style={{ borderColor: THEME.border, color: THEME.text }}
-            value={asOf}
-            onChange={(e) => setAsOf(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="text-xs uppercase tracking-wide block mb-1.5" style={{ color: THEME.textDim }}>
-            Total working days this month
-          </label>
+          <label className="text-xs uppercase tracking-wide block mb-1.5" style={{ color: THEME.textDim }}>Working days</label>
           {editable && !locked ? (
             <form onSubmit={saveWorkingDays} className="flex gap-2">
-              <Input
-                type="number" min="1" max="31" inputMode="numeric"
-                style={{ width: 90 }}
-                value={totalDaysInput}
-                onChange={(e) => setTotalDaysInput(e.target.value)}
-                placeholder="e.g. 26"
-              />
-              <Btn type="submit" accent={MODULE.accent} disabled={saving}>
-                {saving ? 'Saving…' : totalDays ? 'Update' : 'Set'}
-              </Btn>
+              <Input type="number" min="1" max="31" inputMode="numeric" style={{ width: 80 }} value={wdInput}
+                onChange={(e) => setWdInput(e.target.value)} placeholder={String(rules.default_working_days)} />
+              <Btn type="submit" accent={MODULE.accent} disabled={savingWd}>{totalDays ? 'Update' : 'Set'}</Btn>
             </form>
           ) : (
-            <div className="text-sm py-2.5">{totalDays ? `${totalDays} days` : 'Not set yet'}</div>
+            <div className="text-sm py-2.5">{totalDays ?? `${rules.default_working_days} (default)`}</div>
           )}
         </div>
       </Card>
 
+      {siteId && !totalDays && (
+        <Banner tone="amber">
+          Working days for {monthLabel(month)} aren't set for this site — monthly wages use the default of {rules.default_working_days}.
+        </Banner>
+      )}
+      {error && <Banner tone="red">{error}</Banner>}
+      {inputs.error && <Banner tone="red">{inputs.error}</Banner>}
+
       {!siteId ? (
         <Card><EmptyState label="Add a site first, under Sites." /></Card>
-      ) : !totalDays ? (
-        <Banner tone="amber">
-          Set the total working days for {monthLabel(month)} to calculate salary. Until then only days
-          present are shown.
-        </Banner>
-      ) : (
-        <Banner tone="blue">
-          Calculating as of {fmtDate(asOf)}: {workingDaysElapsed} of {totalDays} working days for{' '}
-          {monthLabel(month)} have happened so far.
-        </Banner>
-      )}
-
-      {error && <div className="text-xs mb-3" style={{ color: THEME.red }}>{error}</div>}
-
-      {loading ? (
+      ) : inputs.loading ? (
         <Loading />
-      ) : !siteId ? null : roster.length === 0 ? (
-        <Card>
-          <EmptyState label="No workers on this site yet." hint="Add them under Team and assign this site." />
-        </Card>
+      ) : rows.length === 0 ? (
+        <Card><EmptyState label="No workers on this site this month." hint="Assign workers to this site under Team." /></Card>
       ) : (
-        <TableWrap>
-          <thead>
-            <tr style={{ background: THEME.panel2 }}>
-              <Th>Worker</Th>
-              <Th>Wage</Th>
-              <Th>Days Present</Th>
-              {totalDays ? <Th>Absent</Th> : null}
-              <Th>Payable</Th>
-              <Th>Salary</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr
-                key={r.employee_id}
-                onClick={() => setSelectedId(r.employee_id)}
-                className="border-t cursor-pointer"
-                style={{ borderColor: THEME.border }}
-              >
-                <Td>
-                  <span className="font-medium">{r.name}</span>
-                  {r.trade && <span className="block text-xs" style={{ color: THEME.textDim }}>{r.trade}</span>}
-                </Td>
-                <Td>{r.wage_type} · {inr(r.rate)}{r.wage_type === 'Daily' ? '/day' : '/mo'}</Td>
-                <Td>
-                  <span className="font-semibold" style={{ color: MODULE.accent }}>{r.daysPresent}</span>
-                  {totalDays ? <span style={{ color: THEME.textDim }}> / {workingDaysElapsed}</span> : null}
-                </Td>
-                {totalDays ? <Td>{r.absentDays}</Td> : null}
-                <Td>
-                  {r.finalPayable != null ? (
-                    <>
-                      <span className="font-semibold" style={{ color: THEME.green }}>{inr(r.finalPayable)}</span>
-                      {r.override && <span className="text-xs ml-1.5" style={{ color: THEME.amber }}>edited</span>}
-                    </>
-                  ) : (
-                    <span style={{ color: THEME.textDim }}>—</span>
-                  )}
-                </Td>
-                <Td>
-                  <PayStatusToggle status={r.status} paidOn={r.paid_on} editable={editable && !locked}
-                    busy={payingId === r.employee_id} onToggle={(st) => togglePaid(r.employee_id, st)} />
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </TableWrap>
-      )}
-
-      <p className="text-xs mt-3" style={{ color: THEME.textDim }}>
-        Tap a worker to see the full breakdown.
-      </p>
-
-      <Modal open={!!selectedRow} onClose={() => setSelectedId(null)} title={selectedRow?.name ?? ''} accent={MODULE.accent}>
-        {selectedRow && (
-          <Breakdown
-            key={selectedRow.employee_id}
-            row={selectedRow}
-            month={month}
-            totalDays={totalDays}
-            workingDaysElapsed={workingDaysElapsed}
-            asOf={asOf}
-            editable={editable && !locked}
-            saving={savingOverride}
-            onSave={(amount, note) => saveOverride(selectedRow.employee_id, amount, note)}
-            onClear={() => clearOverride(selectedRow.employee_id)}
-            paying={payingId === selectedRow.employee_id}
-            onSetStatus={(st) => togglePaid(selectedRow.employee_id, st)}
-          />
-        )}
-      </Modal>
-    </div>
-  );
-}
-
-function Breakdown({ row, month, totalDays, workingDaysElapsed, asOf, editable, saving, onSave, onClear, paying, onSetStatus }) {
-  const [editing, setEditing] = useState(false);
-  const [amount, setAmount] = useState('');
-  const [note, setNote] = useState('');
-
-  function startEdit() {
-    const current = row.override ? row.override.amount : row.fullPay;
-    setAmount(current != null ? String(current) : '');
-    setNote(row.override?.note ?? '');
-    setEditing(true);
-  }
-
-  function submit(e) {
-    e.preventDefault();
-    const n = Number(amount);
-    if (amount === '' || Number.isNaN(n)) return;
-    onSave(n, note);
-    setEditing(false);
-  }
-
-  return (
-    <div className="space-y-4 text-sm">
-      <div className="grid grid-cols-2 gap-3">
-        <Info label="Wage type" value={row.wage_type} />
-        <Info label="Rate" value={`${inr(row.rate)}${row.wage_type === 'Daily' ? '/day' : '/month'}`} />
-        <Info label="Working days (full month)" value={totalDays ? `${totalDays} (${monthLabel(month)})` : 'Not set'} />
-        <Info label={`Working days elapsed (as of ${fmtDate(asOf)})`} value={totalDays ? workingDaysElapsed : '—'} />
-        <Info label="Days present" value={row.daysPresent} />
-      </div>
-
-      {totalDays ? (
-        <div className="rounded-lg p-3 space-y-1.5" style={{ background: THEME.panel2 }}>
-          <Line label="Full pay if all days worked" value={inr(row.fullPay)} />
-          <Line label="Per-day rate" value={inr(row.perDayRate)} />
-          <Line label={`Days absent so far (${row.absentDays} × ${inr(row.perDayRate)})`} value={`-${inr(row.deduction)}`} tone="amber" />
-          <div className="my-1" style={{ height: 1, background: THEME.border }} />
-          <Line
-            label={`Calculated payable (as of ${fmtDate(asOf)})`}
-            value={inr(row.payable)}
-            tone={row.override ? undefined : 'green'}
-            bold={!row.override}
-          />
-          {row.advanceTotal > 0 && (
-            <Line label="Advances taken this month" value={`-${inr(row.advanceTotal)}`} tone="amber" />
-          )}
+        <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${THEME.border}` }}>
+          <div className="overflow-x-auto">
+            <table className="text-xs border-collapse">
+              <thead>
+                <tr style={{ background: THEME.panel2 }}>
+                  <th className="sticky left-0 z-10 text-left px-3 py-2 font-medium" style={{ background: THEME.panel2, color: THEME.textDim, minWidth: 130 }}>Worker</th>
+                  {dates.map((d) => (
+                    <th key={d} className="px-0.5 py-1 font-medium text-center" style={{ color: THEME.textDim, minWidth: 26, opacity: weekday(d) === offDay ? 0.5 : 1 }}>
+                      <div>{Number(d.slice(8))}</div>
+                      <div className="text-[9px]">{WD[weekday(d)]}</div>
+                    </th>
+                  ))}
+                  {['Days', 'OT', 'Earned', 'Adv.', 'Paid', 'Balance'].map((h) => (
+                    <th key={h} className="px-2 py-2 font-medium text-right whitespace-nowrap" style={{ color: THEME.textDim }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const cells = cellMap(r);
+                  return (
+                    <tr key={r.employee_id} className="border-t cursor-pointer" style={{ borderColor: THEME.border }} onClick={() => setSelectedId(r.employee_id)}>
+                      <td className="sticky left-0 z-10 px-3 py-2" style={{ background: THEME.panel }}>
+                        <div className="font-medium truncate" style={{ maxWidth: 140 }}>{r.name}</div>
+                        <div className="text-[10px]" style={{ color: THEME.textDim }}>{r.wage_type} · {inr(r.rate)}</div>
+                      </td>
+                      {dates.map((d) => {
+                        const c = cells[d];
+                        return (
+                          <td key={d} className="text-center font-semibold" style={{ color: CODE_COLOR[c?.code] ?? THEME.border, background: weekday(d) === offDay ? 'rgba(155,161,166,0.06)' : undefined }}>
+                            {c?.code || (d <= asOf ? '·' : '')}
+                            {c?.ot_hours > 0 && <sup style={{ color: THEME.blue }}>+</sup>}
+                          </td>
+                        );
+                      })}
+                      <td className="px-2 text-right font-semibold" style={{ color: MODULE.accent }}>{r.days_present}</td>
+                      <td className="px-2 text-right">{r.ot_hours || '—'}</td>
+                      <td className="px-2 text-right whitespace-nowrap">{inr(r.gross)}{r.edited && <sup style={{ color: THEME.amber }}>*</sup>}</td>
+                      <td className="px-2 text-right whitespace-nowrap" style={{ color: THEME.amber }}>{r.advances ? `-${inr(r.advances)}` : '—'}</td>
+                      <td className="px-2 text-right whitespace-nowrap">{r.paid_so_far ? inr(r.paid_so_far) : '—'}</td>
+                      <td className="px-2 text-right whitespace-nowrap font-semibold" style={{ color: r.balance > 0 ? THEME.green : THEME.textDim }}>{inr(r.balance)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: THEME.panel2 }}>
+                  <td className="sticky left-0 px-3 py-2 font-semibold" style={{ background: THEME.panel2 }}>Total</td>
+                  <td colSpan={dim} />
+                  <td className="px-2 text-right font-semibold">{totals.days}</td>
+                  <td />
+                  <td className="px-2 text-right font-semibold whitespace-nowrap">{inr(totals.gross)}</td>
+                  <td className="px-2 text-right whitespace-nowrap" style={{ color: THEME.amber }}>-{inr(totals.advances)}</td>
+                  <td className="px-2 text-right whitespace-nowrap">{inr(totals.paid)}</td>
+                  <td className="px-2 text-right font-semibold whitespace-nowrap" style={{ color: THEME.green }}>{inr(totals.balance)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
-      ) : (
-        <Banner tone="amber">Set the total working days for this month to calculate salary from attendance.</Banner>
+      )}
+      {rows.length > 0 && (
+        <p className="text-xs mt-3" style={{ color: THEME.textDim }}>
+          Tap a worker for the breakdown and to record a payment. P present · H half · A absent · L leave · WO weekly off · HOL holiday · + overtime · * pay edited in Payroll.
+          Advances here are only for workers whose primary site is this one.
+        </p>
       )}
 
-      <div
-        className="rounded-lg p-3"
-        style={{
-          background: row.override ? 'rgba(255,193,7,0.08)' : THEME.panel2,
-          border: `1px solid ${row.override ? THEME.amber : THEME.border}`,
-        }}
-      >
-        {editing ? (
-          <form onSubmit={submit} className="space-y-3">
-            <Field label="Full-month target salary (₹)" required
-              hint="What this worker's total salary for the month should be — e.g. a raise effective mid-month. It's prorated by days elapsed, same as the calculated figure, so 'Payable' below still reflects only what's due so far.">
-              <Input type="number" step="0.01" autoFocus required
-                value={amount} onChange={(e) => setAmount(e.target.value)} />
-            </Field>
-            <Field label="Note (optional)" hint="Why this differs from the calculated amount — bonus, deduction, correction…">
-              <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Diwali bonus" />
-            </Field>
-            <div className="flex gap-2 justify-end">
-              <Btn type="button" variant="subtle" onClick={() => setEditing(false)}>Cancel</Btn>
-              <Btn type="submit" accent={THEME.amber} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Btn>
+      <Modal open={!!selected} onClose={() => setSelectedId(null)} title={selected?.name ?? ''} accent={MODULE.accent}>
+        {selected && (
+          <div className="space-y-4 text-sm">
+            <div className="grid grid-cols-2 gap-3">
+              <Info label="Wage" value={`${inr(selected.rate)} / ${selected.wage_type === 'Monthly' ? 'month' : 'day'}`} />
+              <Info label={`Working days (as of ${fmtDate(asOf)})`} value={`${selected.working_days_elapsed} of ${selected.working_days}`} />
+              <Info label="Days present" value={`${selected.days_present}${selected.half_days ? ` (${selected.half_days} half)` : ''}`} />
+              <Info label="Absent / leave" value={`${selected.absent} / ${selected.leave}`} />
             </div>
-          </form>
-        ) : (
-          <>
-            {row.override && (
-              <Line label="Full-month target (edited)" value={inr(row.override.amount)} tone="amber" />
-            )}
-            <Line
-              label={row.override ? `Payable as of ${fmtDate(asOf)}` : 'Final salary'}
-              value={row.finalPayable != null ? inr(row.finalPayable) : '—'}
-              tone="green" bold
-            />
-            {row.override?.note && (
-              <div className="text-xs mt-1.5" style={{ color: THEME.textDim }}>{row.override.note}</div>
-            )}
-            <div className="flex justify-between items-start gap-3 mt-2">
-              <span style={{ color: THEME.textDim }}>Salary for {monthLabel(month)}</span>
-              <PayStatusToggle status={row.status} paidOn={row.paid_on} editable={editable}
-                busy={paying} onToggle={onSetStatus} />
+            <div className="rounded-lg p-3 space-y-1.5" style={{ background: THEME.panel2 }}>
+              {selected.breakdown.map((b, i) => (
+                <Line key={i} label={b.label} value={b.amount < 0 ? `-${inr(-b.amount)}` : inr(b.amount)} tone={b.amount < 0 || b.override ? 'amber' : undefined} />
+              ))}
+              <div className="my-1" style={{ height: 1, background: THEME.border }} />
+              <Line label={`Net as of ${fmtDate(asOf)}`} value={inr(selected.net)} tone="green" bold />
+              <Line label="Balance after payments" value={inr(selected.balance)} bold />
             </div>
-            {editable && (
-              <div className="flex gap-3 mt-2.5">
-                <button type="button" className="text-xs font-semibold" style={{ color: THEME.amber }} onClick={startEdit}>
-                  Edit salary
-                </button>
-                {row.override && (
-                  <button type="button" className="text-xs" style={{ color: THEME.red }} onClick={onClear} disabled={saving}>
-                    Remove override, use calculated
-                  </button>
-                )}
+            {selected.edited && (
+              <Banner tone="amber">Pay edited in Payroll{selected.adjustment?.note ? ` — ${selected.adjustment.note}` : ''}.</Banner>
+            )}
+            <PaymentsBox employeeId={selected.employee_id} month={month} payments={inputs.payments} balance={selected.balance}
+              editable={canPay} onChanged={inputs.reload} />
+            {canView('payroll') && (
+              <div className="text-xs">
+                <Link to="/payroll" style={{ color: THEME.orange }}>Change this worker's wage, days, bonus or penalty in Payroll →</Link>
               </div>
             )}
-          </>
-        )}
-      </div>
-
-      <div>
-        <div className="text-xs uppercase tracking-wide mb-1.5" style={{ color: THEME.textDim }}>
-          Days marked present
-        </div>
-        {row.dates.length === 0 ? (
-          <div className="text-xs" style={{ color: THEME.textDim }}>No attendance marked this month.</div>
-        ) : (
-          <div className="flex flex-wrap gap-1.5">
-            {row.dates.map((d) => (
-              <span key={d} className="text-xs px-2 py-1 rounded" style={{ background: THEME.panel2, color: THEME.text }}>
-                {fmtDate(d)}
-              </span>
-            ))}
+            <div className="flex flex-wrap gap-1">
+              {selected.days.map((d) => (
+                <Chip key={d.date} tone={{ P: 'green', H: 'amber', A: 'red', L: 'blue' }[d.code] ?? 'dim'}>{Number(d.date.slice(8))} {d.code}</Chip>
+              ))}
+            </div>
           </div>
         )}
-      </div>
+      </Modal>
+
+      {printing && (
+        <PrintSheet title="Attendance Register" docNo={`${activeSites.find((s) => s.id === siteId)?.name ?? ''} · ${monthLabel(month)}`} date={`As of ${fmtDate(asOf)}`} onClose={() => setPrinting(false)}>
+          <table className="w-full border-collapse" style={{ fontSize: 9 }}>
+            <thead>
+              <tr className="border-b-2 border-black">
+                <th className="text-left py-1">Worker</th>
+                {dates.map((d) => <th key={d} className="text-center">{Number(d.slice(8))}</th>)}
+                <th className="text-right px-1">Days</th>
+                <th className="text-right px-1">OT</th>
+                <th className="text-right px-1">Net</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const cells = cellMap(r);
+                return (
+                  <tr key={r.employee_id} className="border-b border-gray-300">
+                    <td className="py-1 pr-1 whitespace-nowrap">{r.name}</td>
+                    {dates.map((d) => <td key={d} className="text-center">{cells[d]?.code ?? ''}</td>)}
+                    <td className="text-right px-1">{r.days_present}</td>
+                    <td className="text-right px-1">{r.ot_hours || ''}</td>
+                    <td className="text-right px-1">{inr(r.net)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </PrintSheet>
+      )}
     </div>
   );
-}
-
-function Info({ label, value }) {
-  return (
-    <div>
-      <div className="text-[11px] uppercase tracking-wide" style={{ color: THEME.textDim }}>{label}</div>
-      <div className="mt-0.5">{value}</div>
-    </div>
-  );
-}
-
-function Line({ label, value, tone, bold }) {
-  const color = tone === 'amber' ? THEME.amber : tone === 'green' ? THEME.green : THEME.text;
-  return (
-    <div className="flex justify-between gap-3">
-      <span style={{ color: THEME.textDim }}>{label}</span>
-      <span style={{ color, fontWeight: bold ? 600 : 400 }}>{value}</span>
-    </div>
-  );
-}
-
-function nextMonthStart(month) {
-  const [y, m] = month.split('-').map(Number);
-  const d = new Date(y, m, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-}
-
-function daysInMonth(month) {
-  const [y, m] = month.split('-').map(Number);
-  return new Date(y, m, 0).getDate();
-}
-
-/** Today, if "month" is the current month — otherwise the last day of it. */
-function defaultAsOf(month) {
-  if (month === thisMonth()) return today();
-  return `${month}-${String(daysInMonth(month)).padStart(2, '0')}`;
 }
