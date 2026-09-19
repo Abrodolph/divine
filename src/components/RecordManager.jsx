@@ -254,18 +254,23 @@ function cardTitle(r, columns) {
   return v === null || v === undefined || v === '' ? '—' : String(v);
 }
 
-/** The field with any form-dependent props evaluated against the current form. */
-function resolve(field, form) {
+/**
+ * The field with any form-dependent props evaluated against the current form.
+ * `ctx` carries shared app data (e.g. the Admin-maintained item categories) so
+ * a field can offer a list that lives in the database, not in the config.
+ */
+function resolve(field, form, ctx) {
   const f = { ...field, hidden: field.visible ? !field.visible(form) : false };
   DYNAMIC_PROPS.forEach((p) => {
-    if (typeof field[p] === 'function') f[p] = field[p](form);
+    if (typeof field[p] === 'function') f[p] = field[p](form, ctx);
   });
   return f;
 }
 
 function FormFields({ fields, form, setForm, sites, table }) {
+  const ctx = useAppData();
   return fields.map((raw) => {
-    const f = resolve(raw, form);
+    const f = resolve(raw, form, ctx);
     if (f.hidden) return null;
     if (f.type === 'checkbox') {
       return (

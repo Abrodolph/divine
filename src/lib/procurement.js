@@ -38,6 +38,56 @@ export const MANUAL_TRANSITIONS = {
 
 export const canMove = (from, to) => (MANUAL_TRANSITIONS[from] ?? []).includes(to);
 
+/* ----------------------------- delivery notes ----------------------------- */
+
+export const RECEIPT_STATUS_LABEL = {
+  submitted: 'Awaiting office check',
+  accepted: 'Accepted',
+  rejected: 'Rejected',
+};
+
+export const RECEIPT_STATUS_TONE = { submitted: 'amber', accepted: 'green', rejected: 'red' };
+
+/** A receipt the site has confirmed but the office has not checked yet. */
+export const isAwaitingAcceptance = (g) => (g?.status ?? 'submitted') === 'submitted';
+
+/**
+ * Where a request has actually reached, as the site and the office see it:
+ *   1 raised → 2 approved → 3 order placed → 4 material received
+ * Only ACCEPTED receipts count as received (the database agrees — see
+ * recompute_request()), so a delivery the site has confirmed but the office
+ * has not checked reads as "waiting for office to accept", never "not
+ * received".
+ *
+ * receipts: goods_receipts rows for this request (extra rows are filtered out).
+ * Returns { step, of, key, label, tone, awaiting } — awaiting = how many of its
+ * receipts are still waiting for the office.
+ */
+export function requestProgress(request, receipts = []) {
+  const status = request?.status ?? 'submitted';
+  const mine = receipts.filter((g) => !g.request_id || !request?.id || g.request_id === request.id);
+  const awaiting = mine.filter(isAwaitingAcceptance).length;
+  const of = 4;
+  const at = (step, key, label, tone) => ({ step, of, key, label, tone, awaiting });
+
+  if (status === 'rejected') return at(1, 'rejected', 'Rejected by the office', 'red');
+  if (status === 'cancelled') return at(1, 'cancelled', 'Cancelled', 'dim');
+  if (status === 'submitted') return at(1, 'raised', 'Raised — waiting for the office to approve', 'amber');
+  if (status === 'approved') return at(2, 'approved', 'Approved — order still to be placed', 'blue');
+
+  if (status === 'ordered' || status === 'partially_received') {
+    if (awaiting > 0) {
+      return at(3, 'awaiting_acceptance', 'Delivery confirmed by site — waiting for office to accept', 'amber');
+    }
+    if (status === 'partially_received') return at(3, 'part_received', 'Part received — rest still awaited', 'amber');
+    return at(3, 'ordered', 'Order placed — awaiting delivery at site', 'blue');
+  }
+
+  if (status === 'received') return at(4, 'received', 'Material received in full', 'green');
+  if (status === 'closed') return at(4, 'closed', 'Closed', 'dim');
+  return at(1, 'raised', REQUEST_STATUS_LABEL[status] ?? 'Raised', 'dim');
+}
+
 export const PO_STATUS_LABEL = {
   draft: 'Draft', sent: 'Sent', partially_received: 'Part received', received: 'Received', cancelled: 'Cancelled',
 };

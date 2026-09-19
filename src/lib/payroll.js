@@ -214,7 +214,8 @@ export function computePayroll({
           amount: r2(otPay), override: setOt !== null,
         });
       }
-      if (bonus) breakdown.push({ label: 'Bonus', amount: bonus, override: true });
+      // `bonus` is the stored column; "Extra" is what the office calls it.
+      if (bonus) breakdown.push({ label: 'Extra', amount: bonus, override: true });
       if (advanceTotal) breakdown.push({ label: 'Advances taken', amount: -advanceTotal });
       if (penalty) breakdown.push({ label: 'Penalty', amount: -penalty, override: true });
 

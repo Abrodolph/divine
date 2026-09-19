@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { computePayroll, labourCostBySite, payrollTotals, rateOn, roundMoney, wagePerHour, workingDaysElapsed } from './payroll';
+// weekLabel lives in dates.js (there is no dates.test.js yet) and only payroll
+// uses it — the week on a logged advance.
+import { weekLabel, weekStart } from './dates';
 
 const M = '2026-09';
 const A = 'site-a';
@@ -157,11 +160,11 @@ describe('payroll edits, advances and payments', () => {
     expect(r).toMatchObject({ gross_basic: 1800, ot_hours: 3, gross_ot: 300, gross: 2100 });
   });
 
-  it('bonus adds to net and penalty and advances come off it', () => {
+  it('the extra (stored as bonus) adds to net and penalty and advances come off it', () => {
     const advances = [{ employee_id: 'd1', date: day(3), amount: 1000 }];
     const r = only(run({ employees: [daily], advances, adjustments: adj({ bonus: 500, penalty: 200 }), entries: days(daily, 1, 10) }));
     expect(r).toMatchObject({ gross: 7500, net: 6300 });
-    expect(r.breakdown.map((b) => b.label)).toEqual(['10 days × ₹700/day', 'Bonus', 'Advances taken', 'Penalty']);
+    expect(r.breakdown.map((b) => b.label)).toEqual(['10 days × ₹700/day', 'Extra', 'Advances taken', 'Penalty']);
     expect(payrollTotals([r])).toMatchObject({ bonus: 500, penalty: 200, net: 6300 });
   });
 
@@ -240,5 +243,29 @@ describe('sites, rounding and edge cases', () => {
     expect(payrollTotals(rows)).toMatchObject({ gross: 10500, net: 10500, days: 15 });
     const cost = labourCostBySite({ sites: [{ id: A, name: 'A' }, { id: B, name: 'B' }], month: M, employees: [daily], entries, workingDays: {} });
     expect(cost.map((c) => [c.name, c.worker_days, c.gross, c.per_day])).toEqual([['A', 10, 7000, 700], ['B', 5, 3500, 700]]);
+  });
+});
+
+describe('the week label on an advance', () => {
+  it('names the Monday–Sunday week containing the date', () => {
+    expect(weekStart('2026-09-18')).toBe('2026-09-14'); // Friday → that Monday
+    expect(weekLabel('2026-09-18')).toBe('14–20 Sep 2026');
+  });
+
+  it('gives the same label for every day of that week', () => {
+    const labels = ['2026-09-14', '2026-09-15', '2026-09-17', '2026-09-19', '2026-09-20'].map(weekLabel);
+    expect(new Set(labels)).toEqual(new Set(['14–20 Sep 2026']));
+  });
+
+  it('spells out both months when the week straddles them', () => {
+    expect(weekLabel('2026-10-01')).toBe('28 Sep – 4 Oct 2026');
+  });
+
+  it('spells out both years over new year', () => {
+    expect(weekLabel('2026-01-01')).toBe('29 Dec 2025 – 4 Jan 2026');
+  });
+
+  it('is blank without a date', () => {
+    expect(weekLabel('')).toBe('');
   });
 });

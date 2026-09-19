@@ -11,14 +11,24 @@ import { moduleByKey } from '../config/modules';
 import DocumentsPanel from '../components/DocumentsPanel';
 import { AuditButton } from '../components/AuditTrail';
 import {
-  SectionHeader, LockBanner, EmptyState, Loading, Card, Field, Input, Select, DeleteBtn, ExportButton,
-  Btn, Modal, FormError, Toggle, Chip, SubHeading, IconBtn,
+  SectionHeader, LockBanner, EmptyState, Loading, Card, Field, Input, TextArea, Select, DeleteBtn,
+  ExportButton, Btn, Modal, FormError, Toggle, Chip, SubHeading, IconBtn,
 } from '../components/ui';
 
 const MODULE = moduleByKey('sites');
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-const blankSite = { name: '', location: '', contact: '', lat: '', lng: '', radius_m: '200' };
+/** Standing delivery-challan details a site carries, set once by Admin. */
+const CHALLAN_FIELDS = [
+  'client_name', 'client_address', 'client_gstin',
+  'ship_to_name', 'ship_to_address', 'ship_to_gstin',
+  'po_no', 'work_purpose',
+];
+
+const blankSite = {
+  name: '', location: '', contact: '', lat: '', lng: '', radius_m: '200',
+  ...Object.fromEntries(CHALLAN_FIELDS.map((k) => [k, ''])),
+};
 
 export default function Sites() {
   const { canEdit, canView, locks } = useAuth();
@@ -42,8 +52,10 @@ export default function Sites() {
     setForm(site ? {
       name: site.name ?? '', location: site.location ?? '', contact: site.contact ?? '',
       lat: site.lat ?? '', lng: site.lng ?? '', radius_m: String(site.radius_m ?? 200),
+      ...Object.fromEntries(CHALLAN_FIELDS.map((k) => [k, site[k] ?? ''])),
     } : blankSite);
-    setSettings(site ? siteSettings(site.id) : DEFAULT_SITE_SETTINGS);
+    const st = site ? siteSettings(site.id) : DEFAULT_SITE_SETTINGS;
+    setSettings(st);
     setError(null);
   }
 
@@ -71,6 +83,7 @@ export default function Sites() {
       lat: form.lat === '' ? null : Number(form.lat),
       lng: form.lng === '' ? null : Number(form.lng),
       radius_m: Number(form.radius_m) || 200,
+      ...Object.fromEntries(CHALLAN_FIELDS.map((k) => [k, form[k]?.trim() || null])),
     };
     try {
       const site = editing === 'new' ? await add(row) : await update(editing.id, row);
@@ -87,6 +100,7 @@ export default function Sites() {
         ot_after_hours: Number(settings.ot_after_hours) || 9,
         ot_round_min: Number(settings.ot_round_min) || 30,
         weekly_off_day: settings.weekly_off_day === '' || settings.weekly_off_day === null ? null : Number(settings.weekly_off_day),
+        freeze_daily: settings.freeze_daily !== false,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'site_id' });
       if (err) throw new Error(friendly(err));
@@ -106,6 +120,11 @@ export default function Sites() {
     { key: 'lng', label: 'Longitude' },
     { key: 'radius_m', label: 'Radius (m)' },
     { key: 'mode', label: 'Attendance mode', value: (r) => siteSettings(r.id).capture_mode },
+    { key: 'freeze', label: 'Freeze daily', value: (r) => (siteSettings(r.id).freeze_daily === false ? 'No' : 'Yes') },
+    { key: 'client_name', label: 'Bill To' },
+    { key: 'ship_to_name', label: 'Ship To' },
+    { key: 'po_no', label: 'PO No.' },
+    { key: 'work_purpose', label: 'Purpose For' },
     { key: 'active', label: 'Active', value: (r) => (r.active === false ? 'No' : 'Yes') },
   ];
 
@@ -261,7 +280,45 @@ export default function Sites() {
                   label="Require a photo" hint="Muster needs a group photo; a punch needs a selfie." />
                 <Toggle checked={settings.require_gps} onChange={(v) => setS('require_gps', v)}
                   label="Require GPS" hint="Attendance can't be saved without a location." />
+                <Toggle checked={settings.freeze_daily !== false} onChange={(v) => setS('freeze_daily', v)}
+                  label="Freeze attendance at the end of each day"
+                  hint="Once a day is over it closes. Only Admin, or someone with Verify Attendance, can then add or change a past day." />
               </div>
+
+              <div className="sm:col-span-2">
+                <SubHeading className="mb-1">DELIVERY CHALLAN DETAILS</SubHeading>
+                <p className="text-[11px] mb-2" style={{ color: THEME.textDim }}>
+                  What every challan from this site repeats. Filled in automatically when a challan is
+                  raised; each challan keeps its own copy, so correcting this later never rewrites old paperwork.
+                </p>
+              </div>
+              <Field label="Bill to — party name" full>
+                <Input value={form.client_name} onChange={(e) => set('client_name', e.target.value)}
+                  placeholder="e.g. Swami Vivekanand Health Mission Society" />
+              </Field>
+              <Field label="Bill to — address" full>
+                <TextArea rows={2} value={form.client_address} onChange={(e) => set('client_address', e.target.value)} />
+              </Field>
+              <Field label="Bill to — GSTIN">
+                <Input value={form.client_gstin} onChange={(e) => set('client_gstin', e.target.value.toUpperCase())}
+                  placeholder="e.g. 09GTDPS9124P1ZP" />
+              </Field>
+              <Field label="Purpose for" hint="e.g. FIRE FIGHTING WORK">
+                <Input value={form.work_purpose} onChange={(e) => set('work_purpose', e.target.value)} />
+              </Field>
+              <Field label="Ship to — name / place of supply" full>
+                <Input value={form.ship_to_name} onChange={(e) => set('ship_to_name', e.target.value)}
+                  placeholder="e.g. Keshav Madhav Chikisalaya" />
+              </Field>
+              <Field label="Ship to — delivery address" full>
+                <TextArea rows={2} value={form.ship_to_address} onChange={(e) => set('ship_to_address', e.target.value)} />
+              </Field>
+              <Field label="Ship to — GSTIN" hint="Leave blank if there isn't one — the challan prints “N.A”.">
+                <Input value={form.ship_to_gstin} onChange={(e) => set('ship_to_gstin', e.target.value.toUpperCase())} />
+              </Field>
+              <Field label="PO no." hint="The client's purchase order for this site, if there is one.">
+                <Input value={form.po_no} onChange={(e) => set('po_no', e.target.value)} />
+              </Field>
             </fieldset>
 
             <FormError error={error} />

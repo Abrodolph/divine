@@ -4,7 +4,7 @@ import { Pencil, Plus, Trash2, PackageCheck, X } from 'lucide-react';
 import { THEME } from '../lib/theme';
 import { supabase } from '../lib/supabase';
 import { fmtDate, today } from '../lib/format';
-import { REQUEST_STATUS_LABEL, REQUEST_STATUS_TONE, PO_STATUS_LABEL } from '../lib/procurement';
+import { PO_STATUS_LABEL, RECEIPT_STATUS_LABEL, requestProgress } from '../lib/procurement';
 import { useRecords, friendly } from '../hooks/useRecords';
 import { useAppData } from '../context/AppDataContext';
 import { useAuth } from '../context/AuthContext';
@@ -26,6 +26,40 @@ const TAB_STATUSES = {
 
 export const blankLine = () => ({ item_id: '', description: '', size: '', qty: '', unit: '', note: '' });
 
+/** The four steps every request walks: raised → approved → ordered → received. */
+const STEP_NAMES = ['Raised', 'Approved', 'Ordered', 'Received'];
+const TONE_COLOR = { green: THEME.green, amber: THEME.amber, blue: THEME.blue, red: THEME.red, dim: THEME.textDim };
+
+/**
+ * Where the request has got to, drawn as the four steps. A delivery the site
+ * has confirmed but the office has not accepted sits on step 3 with its own
+ * wording — it is not "received" until the office says so.
+ */
+export function RequestFlow({ progress, label = true }) {
+  const stopped = ['rejected', 'cancelled'].includes(progress.key);
+  const here = TONE_COLOR[progress.tone] ?? THEME.textDim;
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px]">
+        {STEP_NAMES.map((name, i) => {
+          const n = i + 1;
+          const done = !stopped && n < progress.step;
+          const at = !stopped && n === progress.step;
+          const color = done ? THEME.green : at ? here : THEME.textDim;
+          return (
+            <span key={name} className="flex items-center gap-1.5" style={{ color }}>
+              {i > 0 && <span style={{ color: THEME.textDim }}>›</span>}
+              <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: color, opacity: done || at ? 1 : 0.4 }} />
+              <span style={{ fontWeight: at ? 600 : 400 }}>{name}</span>
+            </span>
+          );
+        })}
+      </div>
+      {label && <div className="text-xs mt-1" style={{ color: here }}>{progress.label}</div>}
+    </div>
+  );
+}
+
 /**
  * Site view of procurement: raise a request for material, see where it is
  * (approved → ordered → received), and receive it when it arrives.
@@ -44,6 +78,13 @@ export default function Requests() {
     select: '*, purchase_request_items(*)',
     orderBy: 'date',
     filters: [['site_id', 'eq', siteFilter], ['status', 'in', TAB_STATUSES[tab]]],
+  });
+
+  // Deliveries the site has confirmed but the office has not accepted yet —
+  // these decide whether a request reads as "waiting for office" or "not received".
+  const pendingGrns = useRecords('goods_receipts', {
+    select: 'id,request_id,status', orderBy: 'date', pageSize: 500,
+    filters: [['site_id', 'eq', siteFilter], ['status', 'eq', 'submitted']],
   });
 
   async function setStatus(r, status) {
@@ -74,7 +115,7 @@ export default function Requests() {
       ) : (
         <div className="space-y-3">
           {rows.map((r) => (
-            <RequestCard key={r.id} r={r} siteName={siteName} onOpen={() => setDetail(r)} onPhoto={setLightbox}
+            <RequestCard key={r.id} r={r} siteName={siteName} receipts={pendingGrns.rows} onOpen={() => setDetail(r)} onPhoto={setLightbox}
               actions={(
                 <>
                   <AuditButton table="purchase_requests" rowId={r.id} />
@@ -107,15 +148,16 @@ export default function Requests() {
   );
 }
 
-export function RequestCard({ r, siteName, actions, onOpen, onPhoto }) {
+export function RequestCard({ r, siteName, actions, onOpen, onPhoto, receipts = [] }) {
   const lines = [...(r.purchase_request_items ?? [])].sort((a, b) => a.sort - b.sort);
+  const progress = requestProgress(r, receipts);
   return (
     <Card className="p-4">
       <div className="flex justify-between items-start gap-2 flex-wrap">
         <button type="button" className="min-w-0 text-left" onClick={onOpen}>
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: THEME.panel2, color: THEME.amber }}>{r.doc_no ?? '—'}</span>
-            <Chip tone={REQUEST_STATUS_TONE[r.status]}>{REQUEST_STATUS_LABEL[r.status]}</Chip>
+            <Chip tone={progress.tone}>{progress.label}</Chip>
             {['High', 'Urgent'].includes(r.priority) && <StatusBadge value={r.priority} />}
           </div>
           <div className="font-semibold mt-1.5" style={{ fontFamily: 'Oswald', letterSpacing: '0.02em' }}>{siteName(r.site_id)}</div>
@@ -124,6 +166,7 @@ export function RequestCard({ r, siteName, actions, onOpen, onPhoto }) {
             {r.needed_by && <> · needed by <b style={{ color: r.needed_by < today() && TAB_STATUSES.open.includes(r.status) ? THEME.red : THEME.text }}>{fmtDate(r.needed_by)}</b></>}
             {r.fulfilled_on && <> · fulfilled <b style={{ color: THEME.green }}>{fmtDate(r.fulfilled_on)}</b></>}
           </div>
+          <RequestFlow progress={progress} label={false} />
         </button>
         <div className="flex items-center gap-1">{actions}</div>
       </div>
@@ -311,7 +354,7 @@ export function RequestTimeline({ request }) {
       const [a, p, g] = await Promise.all([
         supabase.from('approvals').select('*').eq('entity_id', request.id).order('decided_at'),
         supabase.from('purchase_orders').select('id,doc_no,date,status,total,vendors(name)').eq('request_id', request.id).order('date'),
-        supabase.from('goods_receipts').select('id,doc_no,date,items,purchase_orders(doc_no)').eq('request_id', request.id).order('date'),
+        supabase.from('goods_receipts').select('id,request_id,doc_no,date,status,decision_note,items,purchase_orders(doc_no)').eq('request_id', request.id).order('date'),
       ]);
       if (alive) setData({ approvals: a.data ?? [], pos: p.data ?? [], grns: g.data ?? [] });
     })();
@@ -325,14 +368,16 @@ export function RequestTimeline({ request }) {
     ...data.pos.map((x) => ({ date: x.date, text: `${x.doc_no} to ${x.vendors?.name ?? 'vendor'} — ${PO_STATUS_LABEL[x.status]}` })),
     ...data.grns.map((x) => ({
       date: x.date,
-      text: `${x.doc_no} received${x.purchase_orders?.doc_no ? ` against ${x.purchase_orders.doc_no}` : ''}: ${(x.items ?? []).map((l) => `${l.description} ${l.qty_received ?? 0}`).join(', ')}`,
+      text: `${x.doc_no} confirmed by site${x.purchase_orders?.doc_no ? ` against ${x.purchase_orders.doc_no}` : ''}: ${(x.items ?? []).map((l) => `${l.description} ${l.qty_received ?? 0}`).join(', ')}`
+        + ` — ${RECEIPT_STATUS_LABEL[x.status ?? 'submitted']}${x.status === 'rejected' && x.decision_note ? `: ${x.decision_note}` : ''}`,
     })),
     ...(request.fulfilled_on ? [{ date: request.fulfilled_on, text: 'Fulfilled' }] : []),
   ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   return (
     <div className="space-y-4 text-sm">
-      <RequestCard r={request} siteName={siteName} />
+      <RequestCard r={request} siteName={siteName} receipts={data.grns} />
+      <RequestFlow progress={requestProgress(request, data.grns)} />
       <ol className="space-y-2">
         {events.map((ev, i) => (
           <li key={i} className="flex gap-3">

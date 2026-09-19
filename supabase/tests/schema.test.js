@@ -100,9 +100,26 @@ describe('upgrade from the pre-v1 schema', () => {
     expect(prs[0].item_id).not.toBeNull();
     expect(prs[0].doc_no).toMatch(/^PR-0001-\d{4}$/);
     expect(prs[1]).toMatchObject({ status: 'closed', qty: 12, item_id: null });
-    const grn = await one(db.query('select supplier_name, items from public.goods_receipts'));
+    const grn = await one(db.query('select supplier_name, items, status from public.goods_receipts'));
     expect(grn.supplier_name).toBe('Shah Traders');
     expect(grn.items[0]).toMatchObject({ description: 'GI pipe', qty_received: 20 });
+    // Deliveries recorded before the acceptance step existed stay counted.
+    expect(grn.status).toBe('accepted');
+  });
+
+  it('offers the old item categories plus Tools and Machines', async () => {
+    const cats = (await rows(db.query('select name from public.item_categories order by sort, name'))).map((c) => c.name);
+    expect(cats).toContain('Tools');
+    expect(cats).toContain('Machines');
+    expect(cats).toContain('Consumables');
+  });
+
+  it('fills the company letterhead used by the delivery challan', async () => {
+    const s = await one(db.query('select gstin, address, challan_jurisdiction, challan_terms from public.org_settings'));
+    expect(s.gstin).toBe('09GTDPS9124P1ZP');
+    expect(s.address).toMatch(/Ghaziabad/);
+    expect(s.challan_jurisdiction).toBe('GHAZIABAD');
+    expect(s.challan_terms).toMatch(/E\. & O\.E/);
   });
 
   it('turns Paid flags into payment records and opens wage history', async () => {
@@ -297,7 +314,8 @@ describe('attendance rules', () => {
     const yesterday = (await one(db.query("select (public.local_now() - interval '1 day')::date::text as d"))).d;
     await db.query('update public.site_settings set require_photo = false where site_id = $1', [siteB]);
     const before = { site_id: siteB, date: yesterday, group_photo: PHOTO, lat: 19.07, lng: 72.87 };
-    await as(db, site, 'select public.submit_muster($1)', [{ ...before, entries: [{ employee_id: shyam, in_time: '09:00' }] }]);
+    // Yesterday is frozen for the site, so the verifier seeds it.
+    await as(db, verifier, 'select public.submit_muster($1)', [{ ...before, entries: [{ employee_id: shyam, in_time: '09:00' }] }]);
     const yEntry = await one(db.query('select id from public.attendance_entries where employee_id = $1 and date = $2', [shyam, yesterday]));
 
     const d = await today();
@@ -403,10 +421,12 @@ describe('entries added by Admin', () => {
       `insert into public.purchase_orders (request_id, vendor_id, status, items)
        values ($1, $2, 'sent', jsonb_build_array(jsonb_build_object('request_item_id', $3::text, 'description', 'Hanger', 'qty', 10))) returning id`,
       [id, vendor, line.id]));
-    await as(db, site,
-      `insert into public.goods_receipts (site_id, po_id, request_id, items)
-       values ($1, $2, $3, jsonb_build_array(jsonb_build_object('request_item_id', $4::text, 'po_line', 0, 'qty_received', 4)))`,
-      [siteA, po.id, id, line.id]);
+    const grn = await one(as(db, site,
+      `insert into public.goods_receipts (site_id, po_id, request_id, photos, items)
+       values ($1, $2, $3, array[$5], jsonb_build_array(jsonb_build_object('request_item_id', $4::text, 'po_line', 0, 'qty_received', 4)))
+       returning id`,
+      [siteA, po.id, id, line.id, PHOTO]));
+    await as(db, office, "update public.goods_receipts set status = 'accepted' where id = $1", [grn.id]);
     expect((await one(db.query('select status from public.purchase_requests where id = $1', [id]))).status).toBe('partially_received');
     await as(db, office, "update public.purchase_requests set status = 'closed' where id = $1", [id]);
   });
@@ -451,19 +471,32 @@ describe('procurement flow', () => {
     expect((await one(db.query('select status from public.purchase_requests where id = $1', [pr.id]))).status).toBe('ordered');
     expect((await one(db.query('select last_price::float from public.items where id = $1', [item]))).last_price).toBe(410);
 
-    await as(db, site,
-      `insert into public.goods_receipts (site_id, po_id, request_id, items)
-       values ($1, $2, $3, jsonb_build_array(jsonb_build_object('request_item_id', $4::text, 'po_line', 0, 'qty_received', 20)))`,
-      [siteA, po.id, pr.id, line.id]);
+    // A delivery the site confirms counts only once the office has accepted it.
+    await expect(as(db, site,
+      `insert into public.goods_receipts (site_id, po_id, request_id, items) values ($1, $2, $3, '[]'::jsonb)`,
+      [siteA, po.id, pr.id])).rejects.toThrow(/photo of the material/);
+
+    const grn1 = await one(as(db, site,
+      `insert into public.goods_receipts (site_id, po_id, request_id, photos, items)
+       values ($1, $2, $3, array[$5], jsonb_build_array(jsonb_build_object('request_item_id', $4::text, 'po_line', 0, 'qty_received', 20)))
+       returning id, status`,
+      [siteA, po.id, pr.id, line.id, PHOTO]));
+    expect(grn1.status).toBe('submitted');
+    expect((await one(db.query('select status from public.purchase_requests where id = $1', [pr.id]))).status).toBe('ordered');
+    await expect(as(db, site, "update public.goods_receipts set status = 'accepted' where id = $1", [grn1.id]))
+      .rejects.toThrow(/Only the office/);
+    await as(db, office, "update public.goods_receipts set status = 'accepted' where id = $1", [grn1.id]);
     expect((await one(db.query('select status from public.purchase_requests where id = $1', [pr.id]))).status).toBe('partially_received');
     expect((await one(db.query('select status from public.purchase_orders where id = $1', [po.id]))).status).toBe('partially_received');
     expect((await one(db.query('select qty_received::float from public.purchase_request_items where id = $1', [line.id]))).qty_received).toBe(20);
     expect((await one(db.query('select fulfilled_on from public.purchase_requests where id = $1', [pr.id]))).fulfilled_on).toBeNull();
 
-    await as(db, site,
-      `insert into public.goods_receipts (site_id, po_id, request_id, date, items)
-       values ($1, $2, $3, '2026-09-20', jsonb_build_array(jsonb_build_object('request_item_id', $4::text, 'po_line', 0, 'qty_received', 10)))`,
-      [siteA, po.id, pr.id, line.id]);
+    const grn2 = await one(as(db, site,
+      `insert into public.goods_receipts (site_id, po_id, request_id, date, photos, items)
+       values ($1, $2, $3, '2026-09-20', array[$5], jsonb_build_array(jsonb_build_object('request_item_id', $4::text, 'po_line', 0, 'qty_received', 10)))
+       returning id`,
+      [siteA, po.id, pr.id, line.id, PHOTO]));
+    await as(db, office, "update public.goods_receipts set status = 'accepted' where id = $1", [grn2.id]);
     const done = await one(db.query('select status, fulfilled_on::text from public.purchase_requests where id = $1', [pr.id]));
     expect(done).toEqual({ status: 'received', fulfilled_on: '2026-09-20' });
     await as(db, office, "update public.purchase_requests set status = 'closed' where id = $1", [pr.id]);
@@ -498,5 +531,110 @@ describe('procurement flow', () => {
     const pr = await one(as(db, site, 'insert into public.purchase_requests (site_id) values ($1) returning id', [siteA]));
     await expect(as(db, owner, "update public.purchase_requests set status = 'received' where id = $1", [pr.id]))
       .rejects.toThrow(/can't move/);
+  });
+});
+
+describe('attendance freezes at the end of the day', () => {
+  let db;
+  let site;
+  let verifier;
+  let admin;
+  let siteA;
+  let ravi;
+  let yesterday;
+
+  beforeAll(async () => {
+    db = await createDb();
+    admin = await createUser(db, { name: 'Owner' });
+    site = await createUser(db, { role: 'site' });
+    verifier = await createUser(db, { role: 'regional' });
+    siteA = (await one(db.query("insert into public.sites (name, org_id, lat, lng) values ('Hospital', $1, 19.07, 72.87) returning id", [ORG]))).id;
+    ravi = (await one(db.query("insert into public.employees (name, org_id, site_id) values ('Ravi', $1, $2) returning id", [ORG, siteA]))).id;
+    yesterday = (await one(db.query("select (public.local_now() - interval '1 day')::date::text as d"))).d;
+  });
+
+  const muster = (date) => ({ site_id: siteA, date, group_photo: PHOTO, lat: 19.07, lng: 72.87, entries: [{ employee_id: ravi, in_time: '09:00' }] });
+
+  it('lets the site mark today but not yesterday', async () => {
+    await as(db, site, 'select public.submit_muster($1)', [muster((await one(db.query('select public.local_now()::date::text as d'))).d)]);
+    await expect(as(db, site, 'select public.submit_muster($1)', [muster(yesterday)])).rejects.toThrow();
+  });
+
+  it('still lets Admin and the office add a past day', async () => {
+    await as(db, admin, 'select public.submit_muster($1)', [muster(yesterday)]);
+    expect((await one(db.query('select count(*)::int as n from public.musters where date = $1', [yesterday]))).n).toBe(1);
+    // and Verify Attendance can still approve it, or the queue would never clear
+    const m = await one(db.query('select id from public.musters where date = $1', [yesterday]));
+    await as(db, verifier, 'select public.approve_muster($1, $2)', [m.id, [ravi]]);
+    expect((await one(db.query('select status from public.musters where id = $1', [m.id]))).status).toBe('approved');
+  });
+
+  it('can be switched off for a site', async () => {
+    await db.query('insert into public.site_settings (site_id, org_id, freeze_daily) values ($1, $2, false) on conflict (site_id) do update set freeze_daily = false', [siteA, ORG]);
+    const twoDaysAgo = (await one(db.query("select (public.local_now() - interval '2 days')::date::text as d"))).d;
+    await as(db, site, 'select public.submit_muster($1)', [muster(twoDaysAgo)]);
+    expect((await one(db.query('select count(*)::int as n from public.musters where date = $1', [twoDaysAgo]))).n).toBe(1);
+  });
+});
+
+describe('daily progress reports', () => {
+  let db;
+  let site;
+  let admin;
+  let siteA;
+  let ravi;
+  let sunil;
+
+  beforeAll(async () => {
+    db = await createDb();
+    admin = await createUser(db, { name: 'Owner' });
+    site = await createUser(db, { role: 'site' });
+    siteA = (await one(db.query("insert into public.sites (name, org_id) values ('Hospital', $1) returning id", [ORG]))).id;
+    ravi = (await one(db.query("insert into public.employees (name, org_id, site_id) values ('Ravi', $1, $2) returning id", [ORG, siteA]))).id;
+    sunil = (await one(db.query("insert into public.employees (name, org_id, site_id) values ('Sunil', $1, $2) returning id", [ORG, siteA]))).id;
+  });
+
+  it('saves the report, its tasks and each task\'s crew in one call', async () => {
+    const { id } = await one(as(db, site, 'select public.save_dpr($1) as id', [{
+      date: '2026-09-18', site_id: siteA, weather: 'Sunny', reported_by: 'Supervisor',
+      tasks: [
+        { description: 'Sprinkler Installation', size_spec: '15 mm', area: '2nd Floor', qty: 40, unit: 'NOS',
+          manpower: [{ employee_id: ravi, hours: 5 }, { employee_id: sunil, hours: 9 }] },
+        { description: 'Pipe Threading / Grooving', area: 'Basement',
+          manpower: [{ employee_id: ravi, hours: 4 }] },
+      ],
+    }]));
+
+    const tasks = await rows(db.query('select description, area, sort from public.dpr_tasks where dpr_id = $1 order by sort', [id]));
+    expect(tasks.map((t) => t.description)).toEqual(['Sprinkler Installation', 'Pipe Threading / Grooving']);
+    expect(tasks[1].area).toBe('Basement');
+
+    // one worker split across two tasks the same day
+    const hours = await rows(db.query(
+      `select m.hours::float from public.dpr_task_manpower m join public.dpr_tasks t on t.id = m.task_id
+       where t.dpr_id = $1 and m.employee_id = $2 order by t.sort`, [id, ravi]));
+    expect(hours.map((h) => h.hours)).toEqual([5, 4]);
+
+    // manpower on the report counts each worker once
+    expect((await one(db.query('select manpower from public.dpr where id = $1', [id]))).manpower).toBe(2);
+  });
+
+  it('replaces the tasks when the report is saved again', async () => {
+    const d = await one(db.query('select id from public.dpr limit 1'));
+    await as(db, site, 'select public.save_dpr($1)', [{
+      id: d.id, date: '2026-09-18', site_id: siteA, weather: 'Rain',
+      tasks: [{ description: 'Hydrostatic Pressure Testing', manpower: [{ employee_id: sunil, hours: 8 }] }],
+    }]);
+    const tasks = await rows(db.query('select description from public.dpr_tasks where dpr_id = $1', [d.id]));
+    expect(tasks.map((t) => t.description)).toEqual(['Hydrostatic Pressure Testing']);
+    expect((await one(db.query('select weather, manpower from public.dpr where id = $1', [d.id])))).toMatchObject({ weather: 'Rain', manpower: 1 });
+  });
+
+  it('keeps a site login out of another site\'s areas, and lets Admin name them', async () => {
+    await db.query("insert into public.site_areas (org_id, site_id, name, sort) values ($1, $2, 'Basement', 10), ($1, $2, '2nd Floor', 20)", [ORG, siteA]);
+    const seen = await rows(as(db, site, 'select name from public.site_areas order by sort'));
+    expect(seen.map((a) => a.name)).toEqual(['Basement', '2nd Floor']);
+    await expect(as(db, site, "insert into public.site_areas (site_id, name) values ($1, 'Roof')", [siteA])).rejects.toThrow();
+    await as(db, admin, "insert into public.site_areas (site_id, name) values ($1, 'Roof')", [siteA]);
   });
 });

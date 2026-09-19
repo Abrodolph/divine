@@ -33,6 +33,10 @@ const FLAG_TONE = { outside_radius: 'red', duplicate_day: 'red', edited_late: 'a
  *           selfie — punch(); "Close day" records everyone else as absent
  * The database derives half days, OT, late minutes and flags; this screen
  * previews the same rules (src/lib/attendance.js).
+ *
+ * Overtime is captured here and nowhere else: every ticked worker starts at
+ * the site's standard out time and the OT that follows from changing it is
+ * shown live. Payroll only reads the result.
  */
 export default function Attendance() {
   const { activeSites, activeEmployees, employees, siteFilter, siteSettings, sites } = useAppData();
@@ -145,7 +149,11 @@ function MusterPanel({ site, settings, date, roster, entries, muster, editable, 
     const t = {};
     entries.forEach((e) => {
       if (['present', 'half', 'leave'].includes(e.status)) {
-        t[e.employee_id] = { status: e.status, in_time: fmtTime(e.in_time) === '—' ? settings.shift_start : fmtTime(e.in_time), out_time: e.out_time ? fmtTime(e.out_time) : '' };
+        t[e.employee_id] = {
+          status: e.status,
+          in_time: fmtTime(e.in_time) === '—' ? settings.shift_start : fmtTime(e.in_time),
+          out_time: e.out_time ? fmtTime(e.out_time) : settings.shift_end,
+        };
       }
     });
     setTicks(t);
@@ -164,7 +172,7 @@ function MusterPanel({ site, settings, date, roster, entries, muster, editable, 
   const toggle = (id) => setTicks((t) => {
     const next = { ...t };
     if (next[id]) delete next[id];
-    else next[id] = { status: 'present', in_time: settings.shift_start, out_time: '' };
+    else next[id] = { status: 'present', in_time: settings.shift_start, out_time: settings.shift_end };
     return next;
   });
   const setTick = (id, k, v) => setTicks((t) => ({ ...t, [id]: { ...t[id], [k]: v } }));
@@ -232,7 +240,7 @@ function MusterPanel({ site, settings, date, roster, entries, muster, editable, 
           <>
             <div className="flex gap-3 text-xs">
               <button type="button" className="font-semibold" style={{ color: MODULE.accent }}
-                onClick={() => setTicks(Object.fromEntries(roster.map((w) => [w.id, ticks[w.id] ?? { status: 'present', in_time: settings.shift_start, out_time: '' }])))}>
+                onClick={() => setTicks(Object.fromEntries(roster.map((w) => [w.id, ticks[w.id] ?? { status: 'present', in_time: settings.shift_start, out_time: settings.shift_end }])))}>
                 Select all
               </button>
               <button type="button" style={{ color: THEME.textDim }} onClick={() => setTicks({})}>Clear</button>
@@ -270,10 +278,16 @@ function MusterPanel({ site, settings, date, roster, entries, muster, editable, 
                         </select>
                         {t.status !== 'leave' && (
                           <>
-                            <input type="time" value={t.in_time} onChange={(e) => setTick(w.id, 'in_time', e.target.value)} aria-label="In time"
-                              className="bg-transparent border rounded-lg px-2 py-1.5 text-xs outline-none flex-1 min-w-0" style={{ borderColor: THEME.border, color: THEME.text }} />
-                            <input type="time" value={t.out_time} onChange={(e) => setTick(w.id, 'out_time', e.target.value)} aria-label="Out time"
-                              className="bg-transparent border rounded-lg px-2 py-1.5 text-xs outline-none flex-1 min-w-0" style={{ borderColor: THEME.border, color: THEME.text }} />
+                            <label className="flex-1 min-w-0 flex items-center gap-1 text-[11px]" style={{ color: THEME.textDim }}>
+                              In
+                              <input type="time" value={t.in_time} onChange={(e) => setTick(w.id, 'in_time', e.target.value)} aria-label={`In time for ${w.name}`}
+                                className="bg-transparent border rounded-lg px-2 py-1.5 text-xs outline-none flex-1 min-w-0" style={{ borderColor: THEME.border, color: THEME.text }} />
+                            </label>
+                            <label className="flex-1 min-w-0 flex items-center gap-1 text-[11px]" style={{ color: THEME.textDim }}>
+                              Out
+                              <input type="time" value={t.out_time} onChange={(e) => setTick(w.id, 'out_time', e.target.value)} aria-label={`Out time for ${w.name}`}
+                                className="bg-transparent border rounded-lg px-2 py-1.5 text-xs outline-none flex-1 min-w-0" style={{ borderColor: THEME.border, color: THEME.text }} />
+                            </label>
                           </>
                         )}
                       </div>
@@ -281,6 +295,11 @@ function MusterPanel({ site, settings, date, roster, entries, muster, editable, 
                   </div>
                 );
               })}
+            </div>
+            <div className="text-[11px] px-3 py-2.5 rounded-lg" style={{ color: THEME.textDim, background: THEME.panel2 }}>
+              Out time starts at this site's standard <b style={{ color: THEME.text }}>{settings.shift_end}</b> — change it for anyone who stayed on.
+              Anything past <b style={{ color: THEME.text }}>{settings.ot_after_hours} hours</b> on site counts as overtime, shown here as you type and paid with
+              the month's salary. The standard out time is set per site on the Sites screen.
             </div>
             <Toggle checked={form.markRestAbsent} onChange={(v) => setForm((f) => ({ ...f, markRestAbsent: v }))}
               label="Record unticked workers of this site as absent" hint="Keeps the register complete. Floating workers are left out." />
@@ -291,7 +310,7 @@ function MusterPanel({ site, settings, date, roster, entries, muster, editable, 
           <Field label="Extra hands / visitors" full hint="Anyone not on the Team list.">
             <Input value={form.visitors} onChange={(e) => setForm((f) => ({ ...f, visitors: e.target.value }))} placeholder="e.g. 2 helpers from Salim contractor" />
           </Field>
-          <Field label="Crew photo (required)" full hint="Taken here and now — the app's camera only, no gallery.">
+          <Field label="Crew photo" required full hint="Taken here and now — the app's camera only, no gallery.">
             <div className="flex items-center gap-3">
               {form.group_photo[0] && (
                 <StoredImage src={form.group_photo[0]} onClick={() => setLightbox(form.group_photo[0])}

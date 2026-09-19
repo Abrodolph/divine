@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canMove, comparative, lineTotals, poLinesFromQuote, receiptLinesForPo, remainingToOrder } from './procurement';
+import { canMove, comparative, lineTotals, poLinesFromQuote, receiptLinesForPo, remainingToOrder, requestProgress } from './procurement';
 
 const items = [
   { id: 'i1', item_id: 'pipe', description: 'M.S PIPE', size: '100MM', qty: 30, unit: 'MTR', qty_ordered: 0 },
@@ -16,6 +16,40 @@ describe('request status machine', () => {
     expect(canMove('submitted', 'received')).toBe(false);
     expect(canMove('closed', 'submitted')).toBe(false);
     expect(canMove('ordered', 'cancelled')).toBe(false);
+  });
+});
+
+describe('where a request has got to', () => {
+  const req = (status) => ({ id: 'r1', status });
+
+  it('walks the four steps', () => {
+    expect(requestProgress(req('submitted'))).toMatchObject({ step: 1, key: 'raised' });
+    expect(requestProgress(req('approved'))).toMatchObject({ step: 2, key: 'approved' });
+    expect(requestProgress(req('ordered'))).toMatchObject({ step: 3, key: 'ordered' });
+    expect(requestProgress(req('received'))).toMatchObject({ step: 4, key: 'received' });
+    expect(requestProgress(req('submitted')).of).toBe(4);
+  });
+
+  it('reads a site-confirmed delivery as waiting for the office, not as not received', () => {
+    const p = requestProgress(req('ordered'), [{ request_id: 'r1', status: 'submitted' }]);
+    expect(p).toMatchObject({ step: 3, key: 'awaiting_acceptance', awaiting: 1, tone: 'amber' });
+    expect(p.label).toMatch(/waiting for office to accept/i);
+  });
+
+  it('a receipt with no status yet is treated as still awaiting the office', () => {
+    expect(requestProgress(req('partially_received'), [{ request_id: 'r1' }]).key).toBe('awaiting_acceptance');
+  });
+
+  it('ignores accepted and rejected receipts, and receipts for other requests', () => {
+    expect(requestProgress(req('partially_received'), [
+      { request_id: 'r1', status: 'accepted' }, { request_id: 'r1', status: 'rejected' }, { request_id: 'r2', status: 'submitted' },
+    ])).toMatchObject({ key: 'part_received', awaiting: 0 });
+  });
+
+  it('shows rejected, cancelled and closed plainly', () => {
+    expect(requestProgress(req('rejected'))).toMatchObject({ step: 1, key: 'rejected', tone: 'red' });
+    expect(requestProgress(req('cancelled'))).toMatchObject({ step: 1, key: 'cancelled' });
+    expect(requestProgress(req('closed'))).toMatchObject({ step: 4, key: 'closed' });
   });
 });
 

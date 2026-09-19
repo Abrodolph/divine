@@ -44,10 +44,13 @@ Supabase project). Check them before large changes.
   module's `key` must match its route in `App.jsx` and the key in
   `roles.permissions`. `permissionOnly: true` marks a permission with no screen
   (`procurement_approve`, `hr_documents`); `SCREENS` is the menu list.
-- `src/config/fields.js` — field/column defs for `RecordManager` screens (DPR,
-  Transport, MTC, Drawings, Rework, Items, Vendors). One edit changes form,
+- `src/config/fields.js` — field/column defs for `RecordManager` screens
+  (Transport, MTC, Drawings, Rework, Items, Vendors). One edit changes form,
   table and CSV.
 - `src/config/documents.js` — document categories per scope and which expire.
+- `src/config/dprTasks.js` — the DPR task catalogue (from the DPR sheet of
+  `public/SITE REQUIREMENT TAB.xlsx`) and the weather list. The dropdown is a
+  shortcut, not a restriction: a typed task is always allowed.
 
 **Screens**
 
@@ -64,12 +67,17 @@ Supabase project). Check them before large changes.
   on the roll) and TeamArchive (`/team/archive`, workers who left) — both
   render `team/Roster.jsx` and share the `team` permission — Payroll (own
   `payroll` permission: pay table, per-worker pay editor, "Log advance" bulk
-  popup, runs), Documents, Advances, Reports, Admin (people, permissions,
-  freeze, company, payroll rules, audit log). Screens are lazy-loaded in
-  `App.jsx`.
-- Old route `/indents` redirects to `/requirements`. Module keys
-  `requirements` and `material_received` were kept (now Site Requests and
-  Goods Received) so existing role permissions carry over.
+  popup, runs), DPR (date-wise, tasks with per-worker hours), Documents,
+  Reports, Admin (people, permissions, freeze, company + challan wording,
+  site areas, material categories, payroll rules, audit log). Screens are
+  lazy-loaded in `App.jsx`.
+- Old route `/indents` redirects to `/requirements`; `/advances` redirects to
+  `/payroll`. Module keys `requirements` and `material_received` were kept (now
+  Site Requests and Goods Received) so existing role permissions carry over.
+  `advances` is now `permissionOnly` — advances are logged only from Payroll's
+  "Log advance" button, but the permission key still gates the writes.
+- **Bonus is called "Extra" on screen.** The column and the engine field are
+  still `bonus` — a month of live data depends on the name. Labels only.
 - "Left" on a worker asks for the leaving date: sets `active = false` and
   `employees.left_on`; Rehire clears both. `activeEmployees` excludes them.
 
@@ -226,6 +234,11 @@ Key pieces:
   with `verified_at`, and reports the rest as `pending_days`. History from
   before this rule was approved once by the `approve_attendance_history`
   migration.
+- **Daily freeze**: `attendance_day_open(site, date)` closes a day once it has
+  passed, so a site can't add or change yesterday. Admin can, and so can
+  anyone with `attendance_verify` — otherwise the office could never approve
+  yesterday's crew photo. Off per site with `site_settings.freeze_daily`.
+  ANDed into the musters/entries insert, update and delete policies.
 - **Attendance**: `musters` (site/day header: group photo, GPS, extra hands)
   and `attendance_entries` (one per worker/site/day). `attendance_entry_before()`
   stamps server time, derives units/OT/late from `site_settings`, enforces
@@ -259,6 +272,25 @@ Key pieces:
   `procurement`). `purchase_requests.fulfilled_on` is derived: the last GRN
   date when everything is received, today when closed without one, cleared
   if the status moves back. Doc prefixes PR, PO, GRN, DC.
+- **Delivery acceptance**: a GRN is the site's confirmation and needs at least
+  one photo (`goods_receipts_before` refuses an empty `photos`). It starts
+  `submitted`; only `procurement` editors may move it to `accepted`/`rejected`,
+  and **only accepted receipts roll up** into `qty_received`, the request
+  status and `fulfilled_on`. So the flow is: raised → approved → ordered
+  (awaiting site confirmation) → site confirms with photo → office accepts.
+  Receipts from before the rule were accepted once by `accept_grn_history`.
+- **DPR**: `dpr` (the day's header; `work_done` is now nullable) →
+  `dpr_tasks` (one per task: description, size_spec, area, qty, unit) →
+  `dpr_task_manpower` (who worked on it and for how long; a worker can appear
+  on several tasks a day). `save_dpr(p jsonb)` writes all three atomically and
+  derives `dpr.manpower` as the distinct worker count. `site_areas` is the
+  Admin-maintained location list per site.
+- **Challan constants**: `sites` carries each site's Bill To / Ship To / PO /
+  purpose, `org_settings` the letterhead plus `challan_terms`,
+  `challan_jurisdiction`, `challan_tools_note`, `challan_footer`. A saved
+  challan keeps its own copy of all of it, so fixing a site never rewrites old
+  paperwork. `item_categories` is the Admin-maintained category pick-list;
+  `items.category` stays free text so removing a category orphans nothing.
 - **Documents**: `documents` (scope company|site|employee|vendor). Employee
   scope needs `hr_documents`; the Aadhaar number lives here and a trigger keeps
   `employees.aadhaar_last4`.

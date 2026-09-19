@@ -83,7 +83,8 @@ export default function Dashboard() {
     { to: '/requirements', key: 'requirements', label: 'Open requests', value: state.requests.length === 6 ? '6+' : state.requests.length },
     { to: '/rework', key: 'rework', label: 'Open rework', value: state.rework.length === 6 ? '6+' : state.rework.length },
     { to: '/team', key: 'team', label: 'Workers on roll', value: employees.filter((e) => e.active !== false).length },
-    { to: '/advances', key: 'advances', label: 'Advances this month', value: inr(advanceTotal), small: true },
+    // Advances are logged from Payroll now, so the tile goes there.
+    { to: '/payroll', key: 'payroll', label: 'Advances this month', value: inr(advanceTotal), small: true },
   ].filter((t) => (t.perm ? canEdit(t.perm) : canView(t.key)));
 
   return (

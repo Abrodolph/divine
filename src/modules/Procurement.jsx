@@ -4,7 +4,7 @@ import { THEME } from '../lib/theme';
 import { supabase } from '../lib/supabase';
 import { fmtDate, inr, today } from '../lib/format';
 import {
-  canMove, comparative, lineTotals, poLinesFromQuote, remainingToOrder, itemLabel,
+  canMove, comparative, lineTotals, poLinesFromQuote, remainingToOrder, itemLabel, requestProgress,
   REQUEST_STATUS_LABEL, REQUEST_STATUS_TONE, PO_STATUS_LABEL,
 } from '../lib/procurement';
 import { exportCSV } from '../lib/csv';
@@ -12,7 +12,8 @@ import { useRecords, friendly } from '../hooks/useRecords';
 import { useAppData } from '../context/AppDataContext';
 import { useAuth } from '../context/AuthContext';
 import { moduleByKey } from '../config/modules';
-import { RequestCard } from './Requests';
+import { RequestCard, RequestFlow } from './Requests';
+import { ReceiptDecision } from './GoodsReceived';
 import { PurchaseOrderPrint } from '../components/ProcurementPrint';
 import { AuditButton } from '../components/AuditTrail';
 import {
@@ -25,6 +26,7 @@ const TABS = [
   { value: 'approve', label: 'To approve', statuses: ['submitted'] },
   { value: 'order', label: 'To quote & order', statuses: ['approved', 'ordered', 'partially_received'] },
   { value: 'delivery', label: 'Awaiting delivery', statuses: ['ordered', 'partially_received'] },
+  { value: 'accept', label: 'Deliveries to accept' },
   { value: 'done', label: 'Received / closed', statuses: ['received', 'closed'] },
   { value: 'rejected', label: 'Rejected / cancelled', statuses: ['rejected', 'cancelled'] },
   { value: 'pos', label: 'Purchase orders' },
@@ -50,7 +52,12 @@ export default function Procurement() {
   const requests = useRecords('purchase_requests', {
     select: '*, purchase_request_items(*)', orderBy: 'date',
     filters: [['site_id', 'eq', siteFilter], ['status', 'in', tabDef.statuses ?? ['submitted']]],
-    enabled: tab !== 'pos',
+    enabled: !!tabDef.statuses,
+  });
+  // Deliveries the site has confirmed and the office has not checked yet.
+  const pendingGrns = useRecords('goods_receipts', {
+    select: '*, purchase_orders(doc_no), vendors(name), purchase_requests(doc_no)', orderBy: 'date', pageSize: 500,
+    filters: [['site_id', 'eq', siteFilter], ['status', 'eq', 'submitted']],
   });
   const visible = tab === 'order'
     ? requests.rows.filter((r) => r.status === 'approved' || (r.purchase_request_items ?? []).some((i) => remainingToOrder(i) > 0))
@@ -63,15 +70,25 @@ export default function Procurement() {
       <LockBanner locked={!!locks.procurement} readOnly={!canEdit('procurement') && !locks.procurement} />
       <Tabs tabs={TABS} value={tab} onChange={setTab} accent={MODULE.accent} />
 
+      {pendingGrns.rows.length > 0 && tab !== 'accept' && (
+        <Banner tone="amber">
+          {pendingGrns.rows.length === 1 ? '1 delivery is' : `${pendingGrns.rows.length} deliveries are`} waiting for you to accept.
+          Nothing counts as received until you do — open “Deliveries to accept”.
+        </Banner>
+      )}
+
       {tab === 'pos' ? (
         <PurchaseOrders vendorById={vendorById} editable={editable} onPrint={setPrintPo} />
+      ) : tab === 'accept' ? (
+        <DeliveriesToAccept grns={pendingGrns} editable={editable} siteName={siteName}
+          onDecided={() => { pendingGrns.reload(); requests.reload(); }} />
       ) : requests.loading ? <Loading /> : visible.length === 0 ? (
         <Card><EmptyState label="Nothing here right now." /></Card>
       ) : (
         <div className="space-y-3">
           {requests.error && <Banner tone="red">{requests.error}</Banner>}
           {visible.map((r) => (
-            <RequestCard key={r.id} r={r} siteName={siteName} onOpen={() => setOpenId(r.id)}
+            <RequestCard key={r.id} r={r} siteName={siteName} receipts={pendingGrns.rows} onOpen={() => setOpenId(r.id)}
               actions={<Btn variant="subtle" className="!py-1.5 !px-3 !text-xs" onClick={() => setOpenId(r.id)}>Open</Btn>} />
           ))}
           <LoadMore hasMore={requests.hasMore} onClick={requests.loadMore} />
@@ -81,13 +98,72 @@ export default function Procurement() {
       <Modal open={!!open} onClose={() => setOpenId(null)} wide accent={MODULE.accent} title={open ? `${open.doc_no} · ${siteName(open.site_id)}` : ''}>
         {open && (
           <RequestDesk request={open} vendors={vendors} vendorById={vendorById} editable={editable}
-            onChanged={requests.reload} onPrint={(po) => { setPrintPo(po); setOpenId(null); }} />
+            onChanged={() => { requests.reload(); pendingGrns.reload(); }} onPrint={(po) => { setPrintPo(po); setOpenId(null); }} />
         )}
       </Modal>
 
       {printPo && (
         <PurchaseOrderPrint po={printPo} vendor={vendorById[printPo.vendor_id]} requestDocNo={printPo.request_doc_no} onClose={() => setPrintPo(null)} />
       )}
+    </div>
+  );
+}
+
+/* ---------------------------- deliveries queue ---------------------------- */
+
+/**
+ * The office's acceptance queue: every delivery the site has confirmed with a
+ * photo and nobody has checked yet. Accepting is what rolls the quantities into
+ * the request and can mark it fulfilled.
+ */
+function DeliveriesToAccept({ grns, editable, siteName, onDecided }) {
+  const [lightbox, setLightbox] = useState(null);
+  if (grns.loading) return <Loading />;
+  if (!grns.rows.length) {
+    return <Card><EmptyState label="No deliveries waiting." hint="Confirmed deliveries land here for you to accept or reject." /></Card>;
+  }
+  return (
+    <div className="space-y-3">
+      {grns.error && <Banner tone="red">{grns.error}</Banner>}
+      {!editable && <Banner tone="amber">You can see these, but only someone with Procurement edit rights can accept or reject them.</Banner>}
+      {grns.rows.map((g) => (
+        <Card key={g.id} className="p-4">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ background: THEME.panel2, color: MODULE.accent }}>{g.doc_no ?? '—'}</span>
+              <span className="ml-2 font-semibold" style={{ fontFamily: 'Oswald' }}>{siteName(g.site_id)}</span>
+              <div className="text-xs mt-1" style={{ color: THEME.textDim }}>
+                {fmtDate(g.date)} · {g.vendors?.name ?? g.supplier_name ?? 'Supplier not noted'}
+                {g.purchase_orders?.doc_no ? ` · against ${g.purchase_orders.doc_no}` : ' · no PO'}
+                {g.purchase_requests?.doc_no ? ` · ${g.purchase_requests.doc_no}` : ''}
+                {g.challan_ref ? ` · DC ${g.challan_ref}` : ''}{g.vehicle_no ? ` · ${g.vehicle_no}` : ''}
+                {g.received_by_name ? ` · confirmed by ${g.received_by_name}` : ''}
+              </div>
+            </div>
+            <AuditButton table="goods_receipts" rowId={g.id} />
+          </div>
+          <ul className="mt-2 text-sm space-y-1">
+            {(g.items ?? []).map((l, i) => {
+              const short = l.pending_before != null ? Number(l.pending_before) - Number(l.qty_received || 0) : 0;
+              return (
+                <li key={i} className="flex flex-wrap items-center gap-1.5">
+                  • {l.description}{l.size ? ` ${l.size}` : ''} — <b>{Number(l.qty_received) || 0}</b> {l.unit ?? ''}
+                  {short > 0 && <Chip tone="amber">short {short}</Chip>}
+                  {Number(l.qty_rejected) > 0 && <Chip tone="red">rejected {l.qty_rejected}{l.reason ? ` — ${l.reason}` : ''}</Chip>}
+                </li>
+              );
+            })}
+          </ul>
+          {g.remarks && <div className="text-xs mt-2" style={{ color: THEME.textDim }}>{g.remarks}</div>}
+          {g.photos?.length > 0 && <div className="mt-2"><PhotoStrip photos={g.photos} onOpen={setLightbox} /></div>}
+          <div className="mt-3">
+            <ReceiptDecision receipt={g} canDecide={editable}
+              onDecide={async (patch) => { await grns.update(g.id, patch); onDecided(); }} />
+          </div>
+        </Card>
+      ))}
+      <LoadMore hasMore={grns.hasMore} onClick={grns.loadMore} />
+      <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
     </div>
   );
 }
@@ -107,6 +183,10 @@ function RequestDesk({ request, vendors, vendorById, editable, onChanged, onPrin
 
   const quotes = useRecords('quotes', { filters: [['request_id', 'eq', request.id]], orderBy: 'received_at', ascending: true });
   const pos = useRecords('purchase_orders', { filters: [['request_id', 'eq', request.id]], orderBy: 'date', ascending: true });
+  const receipts = useRecords('goods_receipts', {
+    select: '*, purchase_orders(doc_no)', filters: [['request_id', 'eq', request.id]], orderBy: 'date', ascending: true,
+  });
+  const progress = requestProgress(request, receipts.rows);
   const cmp = comparative(lines, quotes.rows);
   const orderable = ['approved', 'ordered', 'partially_received'].includes(request.status);
 
@@ -140,6 +220,7 @@ function RequestDesk({ request, vendors, vendorById, editable, onChanged, onPrin
         </span>
         <AuditButton table="purchase_requests" rowId={request.id} />
       </div>
+      <RequestFlow progress={progress} />
 
       <TableWrap>
         <thead><tr style={{ background: THEME.panel2 }}>{['Item', 'Qty', 'Ordered', 'Received'].map((h) => <Th key={h}>{h}</Th>)}</tr></thead>
@@ -247,6 +328,37 @@ function RequestDesk({ request, vendors, vendorById, editable, onChanged, onPrin
               onChanged={() => { pos.reload(); onChanged(); }} onPrint={() => onPrint({ ...po, request_doc_no: request.doc_no })} />
           ))}
         </div>
+      )}
+
+      {(receipts.rows.length > 0 || ['ordered', 'partially_received', 'received'].includes(request.status)) && (
+        <>
+          <SubHeading className="mb-2">DELIVERIES</SubHeading>
+          {receipts.rows.length === 0 ? (
+            <div className="text-xs" style={{ color: THEME.textDim }}>Site has not confirmed any delivery yet.</div>
+          ) : (
+            <div className="space-y-2">
+              {receipts.rows.map((g) => (
+                <Card key={g.id} className="p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ background: THEME.panel2, color: MODULE.accent }}>{g.doc_no ?? 'GRN'}</span>
+                      <span className="text-xs ml-2" style={{ color: THEME.textDim }}>
+                        {fmtDate(g.date)}{g.purchase_orders?.doc_no ? ` · against ${g.purchase_orders.doc_no}` : ''}
+                        {g.received_by_name ? ` · confirmed by ${g.received_by_name}` : ''}
+                      </span>
+                      <div className="text-xs mt-1">{(g.items ?? []).map((l) => `${l.description}${l.size ? ` ${l.size}` : ''} × ${Number(l.qty_received) || 0}`).join(', ')}</div>
+                    </div>
+                    {g.photos?.length > 0 && <PhotoStrip photos={g.photos} onOpen={setLightbox} size={40} />}
+                  </div>
+                  <div className="mt-2">
+                    <ReceiptDecision receipt={g} canDecide={editable}
+                      onDecide={async (patch) => { await receipts.update(g.id, patch); onChanged(); }} />
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {editable && canMove(request.status, 'closed') && request.status !== 'submitted' && (

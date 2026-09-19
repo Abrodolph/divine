@@ -1,11 +1,17 @@
 import { Plus, Trash2 } from 'lucide-react';
 import { THEME } from '../lib/theme';
 
-const EMPTY = { name: '', qty: '', unit: '' };
+const EMPTY = { name: '', make: '', qty: '', unit: '' };
 export const emptyItems = () => [{ ...EMPTY }];
 
-/** Repeating item rows used by the Delivery Challan form. */
-export default function ItemsEditor({ items, setItems, accent = THEME.orange, label = 'Materials / Items' }) {
+/**
+ * Repeating item rows used by the Delivery Challan form. `make` (the brand
+ * printed in the challan's MAKE column) is optional — pass `showMake` to ask
+ * for it. Rows saved before the column existed simply have no `make` key.
+ */
+export default function ItemsEditor({
+  items, setItems, accent = THEME.orange, label = 'Materials / Items', showMake = false,
+}) {
   const update = (i, key, val) =>
     setItems(items.map((it, idx) => (idx === i ? { ...it, [key]: val } : it)));
   const add = () => setItems([...items, { ...EMPTY }]);
@@ -29,6 +35,15 @@ export default function ItemsEditor({ items, setItems, accent = THEME.orange, la
               className={`flex-1 min-w-0 ${input}`}
               style={style}
             />
+            {showMake && (
+              <input
+                placeholder="Make"
+                value={it.make ?? ''}
+                onChange={(e) => update(i, 'make', e.target.value)}
+                className={`w-24 shrink-0 ${input}`}
+                style={style}
+              />
+            )}
             <input
               placeholder="Qty"
               value={it.qty}
@@ -58,4 +73,6 @@ export default function ItemsEditor({ items, setItems, accent = THEME.orange, la
 }
 
 export const itemsSummary = (items = []) =>
-  items.map((i) => `${i.name} x${i.qty}${i.unit ? ' ' + i.unit : ''}`).join('; ');
+  items
+    .map((i) => `${i.name}${i.make ? ` (${i.make})` : ''} x${i.qty}${i.unit ? ' ' + i.unit : ''}`)
+    .join('; ');

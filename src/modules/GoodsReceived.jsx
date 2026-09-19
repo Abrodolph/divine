@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { PackageCheck, Plus, Trash2 } from 'lucide-react';
+import { Check, PackageCheck, Plus, Trash2, X } from 'lucide-react';
 import { THEME } from '../lib/theme';
 import { supabase } from '../lib/supabase';
 import { fmtDate, inr, today } from '../lib/format';
-import { receiptLinesForPo } from '../lib/procurement';
+import { receiptLinesForPo, RECEIPT_STATUS_LABEL, isAwaitingAcceptance } from '../lib/procurement';
 import { exportCSV } from '../lib/csv';
 import { useRecords, friendly } from '../hooks/useRecords';
 import { useAppData } from '../context/AppDataContext';
@@ -12,10 +12,75 @@ import { moduleByKey } from '../config/modules';
 import { AuditButton } from '../components/AuditTrail';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, Card, Btn, Field, Input, TextArea, SiteSelect, PhotoInput, PhotoStrip,
-  Lightbox, Chip, Modal, FormError, Banner, SubHeading, LoadMore, IconBtn,
+  Lightbox, Chip, Modal, FormError, Banner, SubHeading, LoadMore, IconBtn, StatusBadge,
 } from '../components/ui';
 
 const MODULE = moduleByKey('material_received');
+
+/**
+ * A receipt's acceptance state, and — for the office — the Accept / Reject
+ * buttons. Only an accepted receipt counts towards the request, so this is the
+ * last gate before a request reads as fulfilled.
+ *
+ *   onDecide(patch) — save { status, decision_note }. Never send accepted_by /
+ *   accepted_at: the database trigger stamps those itself.
+ */
+export function ReceiptDecision({ receipt, canDecide, onDecide }) {
+  const status = receipt.status ?? 'submitted';
+  const [rejecting, setRejecting] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function decide(patch) {
+    setBusy(true);
+    setError(null);
+    try {
+      await onDecide(patch);
+      setRejecting(false);
+      setNote('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge value={RECEIPT_STATUS_LABEL[status] ?? status} />
+        {status === 'submitted' && <span className="text-xs" style={{ color: THEME.textDim }}>The office has to accept this before the request counts as received.</span>}
+        {status === 'accepted' && receipt.accepted_at && <span className="text-xs" style={{ color: THEME.green }}>Accepted {fmtDate(receipt.accepted_at.slice(0, 10))}</span>}
+        {canDecide && status === 'submitted' && !rejecting && (
+          <>
+            <Btn variant="ghost" icon={X} className="!py-1 !px-2 !text-xs" disabled={busy} onClick={() => setRejecting(true)}>Reject</Btn>
+            <Btn accent={THEME.green} icon={Check} className="!py-1 !px-2 !text-xs" disabled={busy}
+              onClick={() => decide({ status: 'accepted', decision_note: null })}>Accept</Btn>
+          </>
+        )}
+      </div>
+      {status === 'rejected' && receipt.decision_note && (
+        <div className="text-xs" style={{ color: THEME.red }}>Rejected: {receipt.decision_note}</div>
+      )}
+      {canDecide && rejecting && (
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="grow min-w-[12rem]">
+            <Field label="Why is it rejected" required>
+              <Input value={note} autoFocus onChange={(e) => setNote(e.target.value)} placeholder="Wrong material, damaged, short…" />
+            </Field>
+          </div>
+          <Btn variant="subtle" className="!py-1.5 !px-2.5 !text-xs" disabled={busy} onClick={() => { setRejecting(false); setError(null); }}>Cancel</Btn>
+          <Btn variant="ghost" className="!py-1.5 !px-2.5 !text-xs" disabled={busy}
+            onClick={() => (note.trim() ? decide({ status: 'rejected', decision_note: note.trim() }) : setError('Say why it is rejected, so site knows.'))}>
+            {busy ? 'Saving…' : 'Confirm reject'}
+          </Btn>
+        </div>
+      )}
+      {error && <div className="text-xs" style={{ color: THEME.red }}>{error}</div>}
+    </div>
+  );
+}
 
 /**
  * Material arriving at site. Against a purchase order the lines come from the
@@ -26,6 +91,7 @@ export default function GoodsReceived() {
   const { siteFilter, siteName } = useAppData();
   const { canEdit, canView, locks } = useAuth();
   const editable = (canEdit('material_received') || canEdit('procurement')) && !locks.material_received;
+  const canDecide = canEdit('procurement') && !locks.material_received;
   const [receiving, setReceiving] = useState(null); // null | { po } | { po: null }
   const [lightbox, setLightbox] = useState(null);
 
@@ -44,7 +110,10 @@ export default function GoodsReceived() {
     { key: 'supplier', label: 'Supplier', value: (r) => r.vendors?.name ?? r.supplier_name ?? '' },
     { key: 'items', label: 'Items', value: (r) => (r.items ?? []).map((l) => `${l.description} ${l.qty_received ?? 0}${l.unit ? ` ${l.unit}` : ''}`).join('; ') },
     { key: 'challan_ref', label: 'Challan / invoice' }, { key: 'vehicle_no', label: 'Vehicle' }, { key: 'received_by_name', label: 'Received by' },
+    { key: 'status', label: 'Office check', value: (r) => RECEIPT_STATUS_LABEL[r.status ?? 'submitted'] },
   ];
+
+  const awaiting = grns.rows.filter(isAwaitingAcceptance).length;
 
   return (
     <div>
@@ -82,6 +151,12 @@ export default function GoodsReceived() {
 
       <SubHeading className="mb-2">RECEIPTS</SubHeading>
       {grns.error && <Banner tone="red">{grns.error}</Banner>}
+      {awaiting > 0 && (
+        <Banner tone="amber">
+          {awaiting === 1 ? '1 delivery is' : `${awaiting} deliveries are`} waiting for the office to accept.
+          {canDecide ? ' Check the photos and accept or reject below.' : ' The request stays "not received" until they do.'}
+        </Banner>
+      )}
       {grns.loading ? <Loading /> : grns.rows.length === 0 ? (
         <Card><EmptyState label="Nothing received yet." /></Card>
       ) : (
@@ -100,6 +175,10 @@ export default function GoodsReceived() {
                   </div>
                 </div>
                 <AuditButton table="goods_receipts" rowId={g.id} />
+              </div>
+              <div className="mt-2">
+                <ReceiptDecision receipt={g} canDecide={canDecide}
+                  onDecide={(patch) => grns.update(g.id, patch)} />
               </div>
               <ul className="mt-2 text-sm space-y-1">
                 {(g.items ?? []).map((l, i) => {
@@ -169,6 +248,7 @@ function ReceiveForm({ po, onDone, onCancel }) {
         qty_rejected: Number(l.qty_rejected) || 0, reason: l.reason || null,
       } : { description: l.description.trim(), qty_received: Number(l.qty_received) || 0, unit: l.unit || null }));
     if (!items.length || items.some((l) => !l.description)) { setError('Enter what was received.'); return; }
+    if (!head.photos.length) { setError('Add a photo of the material received before saving.'); return; }
     setSaving(true);
     setError(null);
     try {
@@ -225,12 +305,13 @@ function ReceiveForm({ po, onDone, onCancel }) {
             <Field label="Supplier"><Input value={head.supplier_name} onChange={(e) => setHead((h) => ({ ...h, supplier_name: e.target.value }))} /></Field>
           </>
         )}
-        <Field label="Date"><Input type="date" max={today()} value={head.date} onChange={(e) => setHead((h) => ({ ...h, date: e.target.value }))} /></Field>
+        <Field label="Date" required><Input type="date" required max={today()} value={head.date} onChange={(e) => setHead((h) => ({ ...h, date: e.target.value }))} /></Field>
         <Field label="Supplier's DC / invoice no."><Input value={head.challan_ref} onChange={(e) => setHead((h) => ({ ...h, challan_ref: e.target.value }))} /></Field>
         <Field label="Vehicle no."><Input value={head.vehicle_no} onChange={(e) => setHead((h) => ({ ...h, vehicle_no: e.target.value }))} /></Field>
         <Field label="Received by"><Input value={head.received_by_name} onChange={(e) => setHead((h) => ({ ...h, received_by_name: e.target.value }))} /></Field>
-        <Field label="Photos of material & challan" full>
-          <PhotoInput value={head.photos} onChange={(v) => setHead((h) => ({ ...h, photos: v }))} folder="goods_receipts" max={6} />
+        <Field label="Photos of material & challan" required full
+          hint="Take at least one photo of what actually arrived — the office accepts the delivery from these.">
+          <PhotoInput value={head.photos} onChange={(v) => setHead((h) => ({ ...h, photos: v }))} folder="goods_receipts" max={6} camera="environment" label="Take photo" />
         </Field>
         <Field label="Remarks" full><TextArea rows={2} value={head.remarks} onChange={(e) => setHead((h) => ({ ...h, remarks: e.target.value }))} /></Field>
       </div>

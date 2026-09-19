@@ -20,6 +20,9 @@ export const DEFAULT_SITE_SETTINGS = {
   ot_after_hours: 9,
   ot_round_min: 30,
   weekly_off_day: null,
+  // A day closes once it has passed: the site can't add or change yesterday.
+  // Admin and Verify Attendance still can (see attendance_day_open in schema.sql).
+  freeze_daily: true,
 };
 
 export function withDefaults(settings) {

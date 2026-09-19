@@ -36,7 +36,10 @@ export const MODULES = [
   { key: 'hr_documents',        label: 'Worker ID & Aadhaar', short: 'Worker IDs', icon: IdCard,        accent: THEME.red,    group: 'Setup', permissionOnly: true },
 
   { key: 'payroll',             label: 'Payroll',             short: 'Payroll',    icon: Banknote,      accent: THEME.green,  group: 'Money' },
-  { key: 'advances',            label: 'Weekly Advance',      short: 'Advances',   icon: Wallet,        accent: THEME.amber,  group: 'Money' },
+  // Advances have no screen of their own: they're logged from the Payroll
+  // screen's "Log advance" button. The permission stays so existing roles keep
+  // working and Admin can still grant advance-only access.
+  { key: 'advances',            label: 'Weekly Advance',      short: 'Advances',   icon: Wallet,        accent: THEME.amber,  group: 'Money', permissionOnly: true },
   { key: 'attendance_register', label: 'Attendance Register', short: 'Register',   icon: CalendarCheck, accent: THEME.blue,   group: 'Money' },
   { key: 'reports',             label: 'Reports',             short: 'Reports',    icon: BarChart3,     accent: THEME.green,  group: 'Money' },
 ];

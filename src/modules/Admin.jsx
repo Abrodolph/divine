@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Lock, Unlock, ExternalLink, Check, Copy, KeyRound, UserPlus, Building2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Lock, Unlock, ExternalLink, Check, Copy, KeyRound, UserPlus, Building2, Plus, Trash2, ArrowUp, ArrowDown,
+} from 'lucide-react';
 import { THEME } from '../lib/theme';
 import { supabase } from '../lib/supabase';
 import { PRORATION_LABEL, DEFAULT_RULES } from '../lib/payroll';
 import { useAuth } from '../context/AuthContext';
 import { useAppData } from '../context/AppDataContext';
+import { useRecords } from '../hooks/useRecords';
 import { MODULES, SCREENS, GROUPS, ADMIN } from '../config/modules';
 import { AuditEntry } from '../components/AuditTrail';
 import {
-  SectionHeader, Card, Loading, Banner, Input, Select, Btn, EmptyState, Tabs, Field, Toggle, Modal, FormError, Chip, SubHeading,
+  SectionHeader, Card, Loading, Banner, Input, TextArea, Select, SiteSelect, Btn, IconBtn, EmptyState, Tabs, Field,
+  Toggle, Modal, FormError, Chip, SubHeading,
 } from '../components/ui';
 
 const PROJECT_URL = import.meta.env.VITE_SUPABASE_URL ?? '';
@@ -42,11 +46,13 @@ export default function Admin() {
   const [tab, setTab] = useState('people');
   return (
     <div>
-      <SectionHeader title="Admin Control" subtitle="People, permissions, freeze, company and payroll settings, audit log" icon={ADMIN.icon} accent={ADMIN.accent} />
+      <SectionHeader title="Admin Control" subtitle="People, permissions, freeze, site areas, material categories, company and payroll settings, audit log" icon={ADMIN.icon} accent={ADMIN.accent} />
       <Tabs value={tab} onChange={setTab} accent={ADMIN.accent} tabs={[
         { value: 'people', label: 'People & logins' },
         { value: 'permissions', label: 'Role permissions' },
         { value: 'freeze', label: 'Freeze data' },
+        { value: 'areas', label: 'Site areas' },
+        { value: 'categories', label: 'Material categories' },
         { value: 'company', label: 'Company details' },
         { value: 'payroll', label: 'Payroll rules' },
         { value: 'audit', label: 'Audit log' },
@@ -54,6 +60,8 @@ export default function Admin() {
       {tab === 'people' && <People />}
       {tab === 'permissions' && <Permissions />}
       {tab === 'freeze' && <Freeze />}
+      {tab === 'areas' && <SiteAreas />}
+      {tab === 'categories' && <ItemCategories />}
       {tab === 'company' && <Company />}
       {tab === 'payroll' && <PayrollRules />}
       {tab === 'audit' && <AuditLog />}
@@ -368,6 +376,162 @@ function Freeze() {
   );
 }
 
+/* --------------------- ordered lists: areas & categories ------------------ */
+
+/** Renumbers `sort` so the saved order matches the order on screen. */
+async function renumber(list, update) {
+  for (const [i, row] of list.entries()) {
+    if (row.sort !== i * 10) await update(row.id, { sort: i * 10 });
+  }
+}
+
+/**
+ * Add / rename / reorder / deactivate / remove editor for a small lookup table
+ * (`site_areas`, `item_categories`). Loads through useRecords so the list stays
+ * live and write errors come back readable.
+ */
+function OrderedList({ table, noun, placeholder, emptyLabel, addDefaults = {}, filters = [], enabled = true, confirmRemove }) {
+  const { rows, loading, error, add, update, remove } = useRecords(table, {
+    orderBy: 'sort', ascending: true, filters, enabled,
+  });
+  const ordered = useMemo(
+    () => [...rows].sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0) || String(a.name).localeCompare(String(b.name))),
+    [rows]
+  );
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  async function run(fn) {
+    setBusy(true);
+    setErr(null);
+    try { await fn(); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+
+  function addOne(e) {
+    e.preventDefault();
+    const clean = name.trim();
+    if (!clean) return;
+    run(async () => { await add({ ...addDefaults, name: clean, sort: ordered.length * 10 }); setName(''); });
+  }
+
+  function rename(row, value) {
+    const clean = value.trim();
+    if (!clean || clean === row.name) return;
+    run(() => update(row.id, { name: clean }));
+  }
+
+  function move(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= ordered.length) return;
+    const next = [...ordered];
+    [next[i], next[j]] = [next[j], next[i]];
+    run(() => renumber(next, update));
+  }
+
+  function removeOne(row) {
+    run(async () => {
+      if (confirmRemove && !(await confirmRemove(row))) return;
+      await remove(row.id);
+    });
+  }
+
+  if (!enabled) return null;
+
+  return (
+    <Card className="p-4">
+      {error && <Banner tone="red">{error}</Banner>}
+      {err && <Banner tone="red">{err}</Banner>}
+      <form onSubmit={addOne} className="flex flex-wrap items-end gap-2 mb-4">
+        <div className="flex-1 min-w-[200px]">
+          <Field label={`Add ${noun}`} required>
+            <Input required value={name} placeholder={placeholder} onChange={(e) => setName(e.target.value)} />
+          </Field>
+        </div>
+        <Btn type="submit" accent={ADMIN.accent} icon={Plus} disabled={busy || !name.trim()}>Add</Btn>
+      </form>
+
+      {loading ? <Loading /> : ordered.length === 0 ? <EmptyState label={emptyLabel} /> : (
+        <div className="space-y-2">
+          {ordered.map((row, i) => (
+            <div key={row.id} className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg"
+              style={{ background: THEME.panel2, opacity: row.active === false ? 0.55 : 1 }}>
+              <span className="text-xs w-5 shrink-0" style={{ color: THEME.textDim }}>{i + 1}</span>
+              <div className="flex-1 min-w-[160px]">
+                <Input key={row.name} defaultValue={row.name} aria-label={`${noun} name`} onBlur={(e) => rename(row, e.target.value)} />
+              </div>
+              <Toggle checked={row.active !== false} label="Active" onChange={(v) => run(() => update(row.id, { active: v }))} />
+              <IconBtn icon={ArrowUp} title="Move up" disabled={i === 0} onClick={() => move(i, -1)} style={{ color: THEME.textDim, opacity: i === 0 ? 0.35 : 1 }} />
+              <IconBtn icon={ArrowDown} title="Move down" disabled={i === ordered.length - 1} onClick={() => move(i, 1)}
+                style={{ color: THEME.textDim, opacity: i === ordered.length - 1 ? 0.35 : 1 }} />
+              <IconBtn icon={Trash2} title={`Remove ${noun}`} onClick={() => removeOne(row)} style={{ color: THEME.red }} />
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function SiteAreas() {
+  const { activeSites } = useAppData();
+  const [siteId, setSiteId] = useState('');
+
+  return (
+    <section>
+      <Card className="p-4 mb-4">
+        <Field label="Site" required hint="The named locations inside this site — floors, blocks, shafts — offered by the Daily Progress Report's Location dropdown.">
+          <SiteSelect required sites={activeSites} value={siteId} onChange={(e) => setSiteId(e.target.value)} placeholder="Pick a site…" />
+        </Field>
+      </Card>
+      {!siteId ? (
+        <Card><EmptyState label="Pick a site to see its areas." hint="Each site keeps its own list." /></Card>
+      ) : (
+        <OrderedList
+          table="site_areas"
+          noun="area"
+          placeholder="e.g. 3rd floor, Block B, Shaft 2"
+          emptyLabel="No areas yet for this site."
+          addDefaults={{ site_id: siteId }}
+          filters={[['site_id', 'eq', siteId]]}
+          enabled={!!siteId}
+        />
+      )}
+      <p className="text-xs mt-2" style={{ color: THEME.textDim }}>
+        This list is a convenience, not a rule — a supervisor can still type a location that isn't on it. Turning an area off hides it from
+        new reports without changing the reports that already used it.
+      </p>
+    </section>
+  );
+}
+
+function ItemCategories() {
+  const confirmRemove = useCallback(async (row) => {
+    const { count } = await supabase.from('items').select('id', { count: 'exact', head: true }).eq('category', row.name);
+    if (!count) return true;
+    return window.confirm(
+      `${count} item${count > 1 ? 's' : ''} still use the category "${row.name}". `
+      + 'They keep the category name as typed text and stay exactly as they are — it just stops being offered on new items. Remove it?'
+    );
+  }, []);
+
+  return (
+    <section>
+      <OrderedList
+        table="item_categories"
+        noun="category"
+        placeholder="e.g. Fire alarm"
+        emptyLabel="No categories yet."
+        confirmRemove={confirmRemove}
+      />
+      <p className="text-xs mt-2" style={{ color: THEME.textDim }}>
+        This is the pick-list behind the Category field on the Items screen. An item's category is stored as plain text, so removing a
+        category here never orphans an item — existing items keep their category, it simply stops being offered for new ones.
+      </p>
+    </section>
+  );
+}
+
 /* ---------------------------- company & rules ---------------------------- */
 
 function Company() {
@@ -397,6 +561,26 @@ function Company() {
         <Field label="Email"><Input type="email" value={form.email ?? ''} onChange={(e) => set('email', e.target.value)} /></Field>
         <Field label="GSTIN"><Input value={form.gstin ?? ''} onChange={(e) => set('gstin', e.target.value.toUpperCase())} /></Field>
         <Field label="Logo URL" hint="Optional — a link to a PNG/SVG."><Input value={form.logo_url ?? ''} onChange={(e) => set('logo_url', e.target.value)} /></Field>
+
+        <div className="sm:col-span-2">
+          <SubHeading className="mb-2">DELIVERY CHALLAN WORDING</SubHeading>
+          <p className="text-xs" style={{ color: THEME.textDim }}>
+            The fixed text printed on every delivery challan. The address, phone, email and GSTIN above are the challan letterhead.
+          </p>
+        </div>
+        <Field label="Terms &amp; conditions" full hint="One condition per line — printed as the terms block on the challan.">
+          <TextArea rows={5} value={form.challan_terms ?? ''} onChange={(e) => set('challan_terms', e.target.value)} />
+        </Field>
+        <Field label="Jurisdiction" hint={`Prints as: All Disputes are Subject TO "${(form.challan_jurisdiction ?? '').trim() || 'GHAZIABAD'}" Jurisdiction only`}>
+          <Input value={form.challan_jurisdiction ?? ''} onChange={(e) => set('challan_jurisdiction', e.target.value.toUpperCase())} />
+        </Field>
+        <Field label="Footer line" hint="Optional — an extra line printed just above the signature.">
+          <Input value={form.challan_footer ?? ''} onChange={(e) => set('challan_footer', e.target.value)} />
+        </Field>
+        <Field label="Tools &amp; tackles notice" full hint="Printed only on a tools-and-tackles transfer challan.">
+          <TextArea rows={3} value={form.challan_tools_note ?? ''} onChange={(e) => set('challan_tools_note', e.target.value)} />
+        </Field>
+
         <FormError error={error} />
         <div className="sm:col-span-2 flex items-center justify-end gap-3">
           {saved && <span className="text-xs" style={{ color: THEME.green }}>Saved</span>}

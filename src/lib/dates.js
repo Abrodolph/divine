@@ -47,3 +47,23 @@ export function weekStart(date) {
   const wd = weekday(date);
   return addDays(date, wd === 0 ? -6 : 1 - wd);
 }
+
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * The Monday–Sunday week containing `date`, written the way the office says it:
+ *   '2026-09-17' → '15–21 Sep 2026'
+ *   '2026-10-01' → '28 Sep – 4 Oct 2026'   (week spans two months)
+ *   '2026-01-01' → '29 Dec 2025 – 4 Jan 2026'
+ * Used as the default label on an advance.
+ */
+export function weekLabel(date) {
+  if (!date) return '';
+  const start = weekStart(date);
+  const end = addDays(start, 6);
+  const [sy, sm, sd] = start.split('-').map(Number);
+  const [ey, em, ed] = end.split('-').map(Number);
+  const tail = `${ed} ${MONTH_SHORT[em - 1]} ${ey}`;
+  if (sy === ey && sm === em) return `${sd}–${tail}`;
+  return `${sd} ${MONTH_SHORT[sm - 1]}${sy === ey ? '' : ` ${sy}`} – ${tail}`;
+}

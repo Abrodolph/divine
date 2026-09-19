@@ -249,9 +249,29 @@ create table if not exists public.org_settings (
   logo_url  text,
   timezone  text not null default 'Asia/Kolkata'
 );
+-- Printed on every delivery challan. Admin edits these in Admin Control.
+alter table public.org_settings add column if not exists challan_terms text;
+alter table public.org_settings add column if not exists challan_jurisdiction text;
+alter table public.org_settings add column if not exists challan_tools_note text;
+alter table public.org_settings add column if not exists challan_footer text;
+
 insert into public.org_settings (org_id, name, tagline)
 values (public.default_org(), 'DIVINE ENGINEERING SERVICES', 'Fire Fighting & Electrical Contracting')
 on conflict (org_id) do nothing;
+
+-- Seed the letterhead and challan wording from the company's printed challan.
+-- Only fills blanks, so an Admin's edits are never overwritten.
+update public.org_settings set
+  address = coalesce(nullif(address, ''), 'SF, SHOP NO SF 241, Panchsheel Square, Crossings Republik, Ghaziabad, Uttar Pradesh, 201016'),
+  phone   = coalesce(nullif(phone, ''), '+91-9212033445'),
+  email   = coalesce(nullif(email, ''), 'divinemepservices@gmail.com, desindia1990@gmail.com'),
+  gstin   = coalesce(nullif(gstin, ''), '09GTDPS9124P1ZP'),
+  challan_jurisdiction = coalesce(nullif(challan_jurisdiction, ''), 'GHAZIABAD'),
+  challan_terms = coalesce(nullif(challan_terms, ''),
+    E'E. & O.E\nGoods Once Sold will not be taken back\nInterest @24% P.A will be charged if the payment is not made within the stipulated time.'),
+  challan_tools_note = coalesce(nullif(challan_tools_note, ''),
+    'Tools and Tackles TRANSFER are NOT FOR SALE and solely the Property of M/s DIVINE ENGINEERING SERVICES for the execution of Site purpose only, and any damage, capturing or theft of the Tools is subject to Legal action.')
+where org_id = public.default_org();
 
 -- "Now" and "today" in the company's timezone — site days run on IST, not UTC.
 create or replace function public.local_now()
@@ -289,6 +309,18 @@ alter table public.sites add column if not exists lat numeric;
 alter table public.sites add column if not exists lng numeric;
 alter table public.sites add column if not exists radius_m integer not null default 200;
 
+-- Everything a delivery challan repeats for this site, so the form doesn't ask
+-- for it every time. Editable by Admin on the Sites screen; a saved challan
+-- keeps its own copy, so correcting a site never rewrites old paperwork.
+alter table public.sites add column if not exists client_name text;       -- Bill To (who is billed)
+alter table public.sites add column if not exists client_address text;
+alter table public.sites add column if not exists client_gstin text;
+alter table public.sites add column if not exists ship_to_name text;      -- Ship To / Place of Supply
+alter table public.sites add column if not exists ship_to_address text;
+alter table public.sites add column if not exists ship_to_gstin text;
+alter table public.sites add column if not exists po_no text;
+alter table public.sites add column if not exists work_purpose text;      -- "FIRE FIGHTING WORK"
+
 -- Per-site attendance rules. No row = all defaults.
 create table if not exists public.site_settings (
   site_id           uuid primary key references public.sites on delete cascade,
@@ -304,8 +336,10 @@ create table if not exists public.site_settings (
   ot_after_hours    numeric not null default 9,
   ot_round_min      integer not null default 30,
   weekly_off_day    integer check (weekly_off_day between 0 and 6),  -- 0 = Sunday
+  freeze_daily      boolean not null default true,  -- yesterday is closed; only Admin (or Verify) reopens it
   updated_at        timestamptz not null default now()
 );
+alter table public.site_settings add column if not exists freeze_daily boolean not null default true;
 
 -- Site scoping: a login with rows here sees only those sites; no rows = all.
 create table if not exists public.profile_sites (
@@ -313,6 +347,21 @@ create table if not exists public.profile_sites (
   site_id    uuid not null references public.sites on delete cascade,
   org_id     uuid not null default public.current_org() references public.orgs(id),
   primary key (profile_id, site_id)
+);
+
+-- Named areas within a site (floors, blocks, shafts). Admin maintains the list
+-- in Admin Control; the DPR "Location" dropdown reads it. Free text is still
+-- allowed on a DPR task for anything not on the list.
+create table if not exists public.site_areas (
+  id         uuid primary key default gen_random_uuid(),
+  org_id     uuid not null default public.current_org() references public.orgs(id),
+  site_id    uuid not null references public.sites on delete cascade,
+  name       text not null,
+  sort       integer not null default 0,
+  active     boolean not null default true,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users default auth.uid(),
+  unique (org_id, site_id, name)
 );
 
 create or replace function public.site_in_scope(p_site uuid)
@@ -421,6 +470,107 @@ create table if not exists public.dpr (
   created_by    uuid references auth.users default auth.uid()
 );
 
+-- A day's report is now a list of tasks, each with the crew that worked on it.
+-- work_done stays for the months of reports written before tasks existed (and
+-- as an optional free-text summary), so it can no longer be required.
+alter table public.dpr alter column work_done drop not null;
+
+create table if not exists public.dpr_tasks (
+  id          uuid primary key default gen_random_uuid(),
+  org_id      uuid not null default public.current_org() references public.orgs(id),
+  dpr_id      uuid not null references public.dpr on delete cascade,
+  description text not null,          -- picked from the task catalogue, or typed
+  size_spec   text,
+  area        text,                   -- where in the site: picked from site_areas, or typed
+  qty         numeric,
+  unit        text,
+  remarks     text,
+  sort        integer not null default 0,
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users default auth.uid()
+);
+
+-- Who worked on that task, and for how long. One worker can appear on several
+-- tasks the same day with the hours split between them.
+create table if not exists public.dpr_task_manpower (
+  id          uuid primary key default gen_random_uuid(),
+  org_id      uuid not null default public.current_org() references public.orgs(id),
+  task_id     uuid not null references public.dpr_tasks on delete cascade,
+  employee_id uuid not null references public.employees on delete cascade,
+  hours       numeric check (hours is null or (hours > 0 and hours <= 24)),
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users default auth.uid(),
+  unique (task_id, employee_id)
+);
+
+/*
+ * Save a day's report and all its tasks and crews in one call, so a half-saved
+ * report can't exist. Runs as the caller, so RLS decides whether they may.
+ *   p = { id?, date, site_id, weather, material_used, issues, reported_by,
+ *         work_done?, photos: [],
+ *         tasks: [{ description, size_spec, area, qty, unit, remarks,
+ *                   manpower: [{ employee_id, hours }] }] }
+ * Manpower on the report is derived: the number of different workers on the
+ * day's tasks. Tasks left out of the payload are removed.
+ */
+create or replace function public.save_dpr(p jsonb)
+returns uuid language plpgsql security invoker set search_path = public as $$
+declare
+  did uuid := nullif(p ->> 'id', '')::uuid;
+  t jsonb;
+  m jsonb;
+  tid uuid;
+  n integer := 0;
+  has_tasks boolean := jsonb_array_length(coalesce(p -> 'tasks', '[]'::jsonb)) > 0;
+begin
+  if nullif(p ->> 'site_id', '') is null or nullif(p ->> 'date', '') is null then
+    raise exception 'Choose the site and the date.' using errcode = 'P0001';
+  end if;
+
+  if did is null then
+    insert into public.dpr (date, site_id, work_done, weather, material_used, issues, reported_by, photos)
+    values ((p ->> 'date')::date, (p ->> 'site_id')::uuid, nullif(p ->> 'work_done', ''),
+            nullif(p ->> 'weather', ''), nullif(p ->> 'material_used', ''), nullif(p ->> 'issues', ''),
+            nullif(p ->> 'reported_by', ''), coalesce(array(select jsonb_array_elements_text(p -> 'photos')), '{}'))
+    returning id into did;
+  else
+    update public.dpr set
+      date = (p ->> 'date')::date, site_id = (p ->> 'site_id')::uuid,
+      work_done = nullif(p ->> 'work_done', ''), weather = nullif(p ->> 'weather', ''),
+      material_used = nullif(p ->> 'material_used', ''), issues = nullif(p ->> 'issues', ''),
+      reported_by = nullif(p ->> 'reported_by', ''),
+      photos = coalesce(array(select jsonb_array_elements_text(p -> 'photos')), '{}')
+    where id = did;
+    if not found then
+      raise exception 'That report no longer exists, or you can''t change it.' using errcode = 'P0001';
+    end if;
+  end if;
+
+  delete from public.dpr_tasks where dpr_id = did;
+  for t in select * from jsonb_array_elements(coalesce(p -> 'tasks', '[]'::jsonb)) loop
+    insert into public.dpr_tasks (dpr_id, description, size_spec, area, qty, unit, remarks, sort)
+    values (did, t ->> 'description', nullif(t ->> 'size_spec', ''), nullif(t ->> 'area', ''),
+            nullif(t ->> 'qty', '')::numeric, nullif(t ->> 'unit', ''), nullif(t ->> 'remarks', ''), n)
+    returning id into tid;
+    for m in select * from jsonb_array_elements(coalesce(t -> 'manpower', '[]'::jsonb)) loop
+      insert into public.dpr_task_manpower (task_id, employee_id, hours)
+      values (tid, (m ->> 'employee_id')::uuid, nullif(m ->> 'hours', '')::numeric)
+      on conflict (task_id, employee_id) do update set hours = excluded.hours;
+    end loop;
+    n := n + 1;
+  end loop;
+
+  if has_tasks then
+    update public.dpr set manpower = (
+      select count(distinct mp.employee_id)
+      from public.dpr_tasks tk join public.dpr_task_manpower mp on mp.task_id = tk.id
+      where tk.dpr_id = did)
+    where id = did;
+  end if;
+
+  return did;
+end $$;
+
 create table if not exists public.challans (
   id               uuid primary key default gen_random_uuid(),
   doc_no           text,
@@ -441,6 +591,16 @@ create table if not exists public.challans (
 );
 alter table public.challans add column if not exists party_gstin text;
 alter table public.challans add column if not exists po_no text;
+-- party/party_address/party_gstin are the Bill To. Ship To is where it lands.
+-- Both are copied from the site when the challan is raised and then frozen, so
+-- reprinting an old challan shows what was actually sent.
+alter table public.challans add column if not exists ship_to_name text;
+alter table public.challans add column if not exists ship_to_address text;
+alter table public.challans add column if not exists ship_to_gstin text;
+alter table public.challans add column if not exists purpose text;
+alter table public.challans add column if not exists kind text not null default 'material';
+alter table public.challans drop constraint if exists challans_kind_check;
+alter table public.challans add constraint challans_kind_check check (kind in ('material', 'tools'));
 
 create table if not exists public.transport (
   id               uuid primary key default gen_random_uuid(),
@@ -584,6 +744,21 @@ create or replace function public.attendance_in_window(p_site uuid, p_marked_at 
 returns boolean language sql stable security definer set search_path = public as $$
   select p_marked_at > now() - make_interval(hours => coalesce(
     (select edit_window_hours from public.site_settings where site_id = p_site), 24))
+$$;
+
+/*
+ * Attendance freezes at the end of the day it belongs to: once the date has
+ * passed, the site can no longer add or change that day's marks. Admin always
+ * can, and so can someone with Verify Attendance — otherwise the office could
+ * never approve yesterday's crew photo. Turn it off per site with
+ * site_settings.freeze_daily.
+ */
+create or replace function public.attendance_day_open(p_site uuid, p_date date)
+returns boolean language sql stable security definer set search_path = public as $$
+  select public.is_admin()
+      or public.can_edit('attendance_verify')
+      or not coalesce((select freeze_daily from public.site_settings where site_id = p_site), true)
+      or p_date >= public.local_now()::date
 $$;
 
 create or replace function public.muster_before()
@@ -1108,6 +1283,20 @@ create table if not exists public.vendors (
   created_by   uuid references auth.users default auth.uid()
 );
 
+-- The category list offered when adding an item. Admin adds and removes these
+-- in Admin Control; items.category stays plain text, so removing a category
+-- never orphans an item.
+create table if not exists public.item_categories (
+  id         uuid primary key default gen_random_uuid(),
+  org_id     uuid not null default public.current_org() references public.orgs(id),
+  name       text not null,
+  sort       integer not null default 0,
+  active     boolean not null default true,
+  created_at timestamptz not null default now(),
+  created_by uuid references auth.users default auth.uid(),
+  unique (org_id, name)
+);
+
 create table if not exists public.items (
   id                  uuid primary key default gen_random_uuid(),
   org_id              uuid not null default public.current_org() references public.orgs(id),
@@ -1238,6 +1427,50 @@ create table if not exists public.goods_receipts (
   created_at       timestamptz not null default now(),
   created_by       uuid references auth.users default auth.uid()
 );
+-- The site confirms a delivery with photos of what actually turned up; the
+-- office (or Admin) then accepts it. Only ACCEPTED receipts count towards the
+-- request, so nothing is marked fulfilled on the site's word alone.
+alter table public.goods_receipts add column if not exists status text not null default 'submitted';
+alter table public.goods_receipts drop constraint if exists goods_receipts_status_check;
+alter table public.goods_receipts add constraint goods_receipts_status_check
+  check (status in ('submitted', 'accepted', 'rejected'));
+alter table public.goods_receipts add column if not exists accepted_by uuid references auth.users;
+alter table public.goods_receipts add column if not exists accepted_at timestamptz;
+alter table public.goods_receipts add column if not exists decision_note text;
+
+/*
+ * A receipt is evidence: it needs at least one photo, and only someone with
+ * Procurement access may accept or reject it. Accepting is what releases the
+ * quantities into the request (see recompute_request).
+ */
+create or replace function public.goods_receipts_before()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then return new; end if;   -- imports and migrations
+  if tg_op = 'INSERT' then
+    if coalesce(array_length(new.photos, 1), 0) = 0 then
+      raise exception 'Add a photo of the material received before saving.' using errcode = 'P0001';
+    end if;
+    if new.status <> 'submitted' and not public.can_edit('procurement') then
+      new.status := 'submitted';
+    end if;
+  elsif new.status is distinct from old.status then
+    if not public.can_edit('procurement') then
+      raise exception 'Only the office can accept or reject a delivery.' using errcode = 'P0001';
+    end if;
+    if new.status in ('accepted', 'rejected') then
+      new.accepted_by := auth.uid();
+      new.accepted_at := now();
+    else
+      new.accepted_by := null;
+      new.accepted_at := null;
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists goods_receipts_before on public.goods_receipts;
+create trigger goods_receipts_before before insert or update on public.goods_receipts
+  for each row execute function public.goods_receipts_before();
 
 create table if not exists public.price_history (
   id          uuid primary key default gen_random_uuid(),
@@ -1304,7 +1537,8 @@ begin
     qty_received = coalesce((
       select sum(coalesce((li ->> 'qty_received')::numeric, 0))
       from public.goods_receipts g, jsonb_array_elements(g.items) li
-      where g.request_id = p_request and li ->> 'request_item_id' = pri.id::text), 0)
+      where g.request_id = p_request and g.status = 'accepted'
+        and li ->> 'request_item_id' = pri.id::text), 0)
   where pri.request_id = p_request;
 
   select status into cur from public.purchase_requests where id = p_request;
@@ -1321,7 +1555,8 @@ begin
       when coalesce(total_ordered, 0) > 0 then 'ordered'
       else 'approved' end,
     fulfilled_on = case when coalesce(all_received, false)
-      then (select max(g.date) from public.goods_receipts g where g.request_id = p_request) end,
+      then (select max(g.date) from public.goods_receipts g
+            where g.request_id = p_request and g.status = 'accepted') end,
     updated_at = now()
   where id = p_request;
   perform set_config('gridwatch.system', 'off', true);
@@ -1346,7 +1581,7 @@ begin
   ), recv as (
     select (li ->> 'po_line')::int as line_no, sum(coalesce((li ->> 'qty_received')::numeric, 0)) as qty
     from public.goods_receipts g, jsonb_array_elements(g.items) li
-    where g.po_id = p_po and li ? 'po_line'
+    where g.po_id = p_po and g.status = 'accepted' and li ? 'po_line'
     group by 1
   )
   select count(*), count(*) filter (where coalesce(r.qty, 0) >= l.qty), bool_or(coalesce(r.qty, 0) > 0)
@@ -1669,7 +1904,8 @@ begin
     select * from (values
       ('musters', '''attendance_verify'''),
       ('attendance_entries', '''attendance_verify'''),
-      ('dpr', ''), ('rework', ''), ('challans', ''), ('transport', ''), ('mtc', ''), ('drawings', ''),
+      ('dpr', ''), ('dpr_tasks', ''), ('dpr_task_manpower', ''),
+      ('rework', ''), ('challans', ''), ('transport', ''), ('mtc', ''), ('drawings', ''),
       ('purchase_requests', '''procurement'', ''procurement_approve'''),
       ('purchase_request_items', '''procurement'''),
       ('goods_receipts', '''procurement'''),
@@ -1696,7 +1932,7 @@ begin
     'payroll_payments', 'working_days', 'employees', 'employee_rates', 'sites', 'site_settings',
     'profile_sites', 'profiles', 'roles', 'module_locks', 'payroll_rules', 'org_settings',
     'purchase_requests', 'purchase_request_items', 'quotes', 'purchase_orders', 'goods_receipts',
-    'documents', 'vendors', 'items'
+    'documents', 'vendors', 'items', 'item_categories', 'site_areas'
   ] loop
     execute format('drop trigger if exists audit_row on public.%I', t);
     execute format('create trigger audit_row after insert or update or delete on public.%I for each row execute function public.audit_row()', t);
@@ -1922,6 +2158,41 @@ begin
   end if;
 end $$;
 
+-- Deliveries now need the office to accept them before they count towards a
+-- request. Everything received before that rule existed (including receipts
+-- just migrated from the old Material Received log) is treated as accepted, so
+-- no past request suddenly looks unfulfilled.
+do $$
+begin
+  if not exists (select 1 from public.schema_migrations where key = 'accept_grn_history') then
+    update public.goods_receipts
+    set status = 'accepted', accepted_at = coalesce(accepted_at, created_at)
+    where status = 'submitted';
+    insert into public.schema_migrations (key) values ('accept_grn_history');
+  end if;
+end $$;
+
+-- The category list behind the Items screen: what was already in use, plus
+-- Tools and Machines. Admin edits the list from here on.
+do $$
+begin
+  if not exists (select 1 from public.schema_migrations where key = 'seed_item_categories') then
+    insert into public.item_categories (org_id, name, sort)
+    select public.default_org(), v.name, v.sort
+    from (values
+      ('Pipes, valves & steel', 10), ('Consumables', 20), ('Fire alarm', 30),
+      ('Electrical', 40), ('Tools', 50), ('Machines', 60)
+    ) as v(name, sort)
+    on conflict (org_id, name) do nothing;
+    -- Anything already typed into an item stays a category.
+    insert into public.item_categories (org_id, name, sort)
+    select distinct i.org_id, i.category, 90 from public.items i
+    where nullif(i.category, '') is not null
+    on conflict (org_id, name) do nothing;
+    insert into public.schema_migrations (key) values ('seed_item_categories');
+  end if;
+end $$;
+
 -- Requests already received or closed get a fulfilled date.
 update public.purchase_requests pr
 set fulfilled_on = coalesce((select max(g.date) from public.goods_receipts g where g.request_id = pr.id), pr.updated_at::date, pr.date)
@@ -1940,6 +2211,11 @@ create index if not exists idx_entries_site_date on public.attendance_entries (s
 create index if not exists idx_entries_unverified on public.attendance_entries (date desc)
   where verified_at is null and flags <> '{}';
 create index if not exists idx_dpr_date on public.dpr (date desc);
+create index if not exists idx_dpr_tasks_dpr on public.dpr_tasks (dpr_id, sort);
+create index if not exists idx_dpr_manpower_task on public.dpr_task_manpower (task_id);
+create index if not exists idx_dpr_manpower_emp on public.dpr_task_manpower (employee_id);
+create index if not exists idx_site_areas_site on public.site_areas (site_id, sort);
+create index if not exists idx_grn_status on public.goods_receipts (status, date desc);
 create index if not exists idx_advances_date on public.advances (date desc);
 create index if not exists idx_employees_site on public.employees (site_id);
 create index if not exists idx_employee_rates_emp on public.employee_rates (employee_id, effective_from);
@@ -1971,6 +2247,8 @@ begin
     select * from (values
       ('sites', 'sites', 'id'),
       ('site_settings', 'sites', 'site_id'),
+      ('site_areas', 'sites', 'site_id'),
+      ('item_categories', 'items', null),
       ('employees', 'team', 'site_id'),
       ('employee_rates', 'team', null),
       ('dpr', 'dpr', 'site_id'),
@@ -2039,19 +2317,23 @@ create policy musters_read on public.musters for select to authenticated
 drop policy if exists musters_ins on public.musters;
 create policy musters_ins on public.musters for insert to authenticated
   with check (org_id = public.current_org() and public.can_edit('attendance') and public.site_in_scope(site_id)
-              and (public.is_admin() or not public.period_is_locked(site_id, date)));
+              and (public.is_admin() or not public.period_is_locked(site_id, date))
+              and public.attendance_day_open(site_id, date));
 drop policy if exists musters_upd on public.musters;
 create policy musters_upd on public.musters for update to authenticated
   using (org_id = public.current_org() and public.site_in_scope(site_id)
          and (public.is_admin() or not public.period_is_locked(site_id, date))
+         and public.attendance_day_open(site_id, date)
          and ((public.can_edit('attendance') and public.attendance_in_window(site_id, marked_at))
               or public.can_edit('attendance_verify')))
   with check (org_id = public.current_org() and public.site_in_scope(site_id)
-              and (public.is_admin() or not public.period_is_locked(site_id, date)));
+              and (public.is_admin() or not public.period_is_locked(site_id, date))
+              and public.attendance_day_open(site_id, date));
 drop policy if exists musters_del on public.musters;
 create policy musters_del on public.musters for delete to authenticated
   using (org_id = public.current_org() and public.site_in_scope(site_id)
          and (public.is_admin() or not public.period_is_locked(site_id, date))
+         and public.attendance_day_open(site_id, date)
          and ((public.can_edit('attendance') and public.attendance_in_window(site_id, marked_at))
               or public.can_edit('attendance_verify')));
 
@@ -2062,19 +2344,23 @@ create policy entries_read on public.attendance_entries for select to authentica
 drop policy if exists entries_ins on public.attendance_entries;
 create policy entries_ins on public.attendance_entries for insert to authenticated
   with check (org_id = public.current_org() and public.can_edit('attendance') and public.site_in_scope(site_id)
-              and (public.is_admin() or not public.period_is_locked(site_id, date)));
+              and (public.is_admin() or not public.period_is_locked(site_id, date))
+              and public.attendance_day_open(site_id, date));
 drop policy if exists entries_upd on public.attendance_entries;
 create policy entries_upd on public.attendance_entries for update to authenticated
   using (org_id = public.current_org() and public.site_in_scope(site_id)
          and (public.is_admin() or not public.period_is_locked(site_id, date))
+         and public.attendance_day_open(site_id, date)
          and ((public.can_edit('attendance') and public.attendance_in_window(site_id, marked_at))
               or public.can_edit('attendance_verify')))
   with check (org_id = public.current_org() and public.site_in_scope(site_id)
-              and (public.is_admin() or not public.period_is_locked(site_id, date)));
+              and (public.is_admin() or not public.period_is_locked(site_id, date))
+              and public.attendance_day_open(site_id, date));
 drop policy if exists entries_del on public.attendance_entries;
 create policy entries_del on public.attendance_entries for delete to authenticated
   using (org_id = public.current_org() and public.site_in_scope(site_id)
          and (public.is_admin() or not public.period_is_locked(site_id, date))
+         and public.attendance_day_open(site_id, date)
          and ((public.can_edit('attendance') and public.attendance_in_window(site_id, marked_at))
               or public.can_edit('attendance_verify')));
 
@@ -2169,6 +2455,34 @@ create policy pri_write on public.purchase_request_items for all to authenticate
   with check (org_id = public.current_org() and exists (
            select 1 from public.purchase_requests r where r.id = request_id and public.site_in_scope(r.site_id)
              and (public.can_edit('procurement') or (public.can_edit('requirements') and r.status in ('submitted', 'rejected')))));
+
+-- DPR tasks and their crews follow the report they belong to.
+alter table public.dpr_tasks enable row level security;
+drop policy if exists dpr_tasks_read on public.dpr_tasks;
+create policy dpr_tasks_read on public.dpr_tasks for select to authenticated
+  using (org_id = public.current_org()
+         and exists (select 1 from public.dpr d where d.id = dpr_id and public.site_in_scope(d.site_id)));
+drop policy if exists dpr_tasks_write on public.dpr_tasks;
+create policy dpr_tasks_write on public.dpr_tasks for all to authenticated
+  using (org_id = public.current_org() and public.can_edit('dpr')
+         and exists (select 1 from public.dpr d where d.id = dpr_id and public.site_in_scope(d.site_id)))
+  with check (org_id = public.current_org() and public.can_edit('dpr')
+              and exists (select 1 from public.dpr d where d.id = dpr_id and public.site_in_scope(d.site_id)));
+
+alter table public.dpr_task_manpower enable row level security;
+drop policy if exists dpr_manpower_read on public.dpr_task_manpower;
+create policy dpr_manpower_read on public.dpr_task_manpower for select to authenticated
+  using (org_id = public.current_org() and exists (
+    select 1 from public.dpr_tasks t join public.dpr d on d.id = t.dpr_id
+    where t.id = task_id and public.site_in_scope(d.site_id)));
+drop policy if exists dpr_manpower_write on public.dpr_task_manpower;
+create policy dpr_manpower_write on public.dpr_task_manpower for all to authenticated
+  using (org_id = public.current_org() and public.can_edit('dpr') and exists (
+    select 1 from public.dpr_tasks t join public.dpr d on d.id = t.dpr_id
+    where t.id = task_id and public.site_in_scope(d.site_id)))
+  with check (org_id = public.current_org() and public.can_edit('dpr') and exists (
+    select 1 from public.dpr_tasks t join public.dpr d on d.id = t.dpr_id
+    where t.id = task_id and public.site_in_scope(d.site_id)));
 
 alter table public.approvals enable row level security;
 drop policy if exists approvals_read on public.approvals;
@@ -2327,8 +2641,8 @@ begin
     'dpr', 'challans', 'transport', 'mtc', 'drawings', 'rework', 'advances',
     'payroll_runs', 'payroll_payments', 'working_days', 'salary_adjustments',
     'profiles', 'roles', 'module_locks', 'profile_sites', 'org_settings', 'payroll_rules',
-    'items', 'vendors', 'purchase_requests', 'purchase_request_items', 'quotes',
-    'purchase_orders', 'goods_receipts', 'documents'
+    'items', 'item_categories', 'vendors', 'purchase_requests', 'purchase_request_items', 'quotes',
+    'purchase_orders', 'goods_receipts', 'documents', 'site_areas', 'dpr_tasks', 'dpr_task_manpower'
   ] loop
     begin
       execute format('alter publication supabase_realtime add table public.%I', t);

@@ -54,35 +54,18 @@ export const UNITS = [
   { value: 'YDS', label: 'YDS — YARDS' },
 ];
 
-export const DPR = {
-  fields: [
-    { key: 'date', label: 'Date', type: 'date', default: today },
-    { key: 'site_id', label: 'Site', type: 'site', required: true },
-    { key: 'work_done', label: 'Work carried out today', type: 'textarea', full: true, required: true,
-      placeholder: 'e.g. Sprinkler piping 2nd floor — 40m laid and supported' },
-    { key: 'manpower', label: 'Manpower deployed', type: 'number' },
-    { key: 'weather', label: 'Weather', type: 'select', options: ['Clear', 'Rain', 'Cloudy', 'Extreme Heat'] },
-    { key: 'material_used', label: 'Material consumed', type: 'textarea', full: true },
-    { key: 'issues', label: 'Issues / delays', type: 'textarea', full: true,
-      hint: 'Anything that held work up today — shortage, access, client instruction.' },
-    { key: 'reported_by', label: 'Reported by', type: 'text' },
-    { key: 'photos', label: 'Photos', type: 'photos', max: 6 },
-  ],
-  columns: [
-    { key: 'date', label: 'Date', type: 'date' },
-    { key: 'site_id', label: 'Site', type: 'site' },
-    { key: 'work_done', label: 'Work Done' },
-    { key: 'manpower', label: 'Manpower' },
-    { key: 'issues', label: 'Issues' },
-    { key: 'reported_by', label: 'By' },
-    { key: 'photos', label: 'Photos', type: 'photos' },
-  ],
-};
+// The Daily Progress Report is no longer a RecordManager screen: it has its own
+// date-wise screen (src/modules/DPR.jsx) with per-task crews, so its field defs
+// live there and the task catalogue lives in src/config/dprTasks.js.
 
 export const ITEMS = {
   fields: [
     { key: 'name', label: 'Item name', type: 'text', required: true, placeholder: 'e.g. M.S PIPE' },
-    { key: 'category', label: 'Category', type: 'combo', options: ['Pipes, valves & steel', 'Consumables', 'Fire alarm', 'Electrical', 'Tools'] },
+    // The list Admin maintains in Admin Control → Material categories. Still a
+    // combo, so a one-off category can be typed without adding it to the list.
+    { key: 'category', label: 'Category', type: 'combo',
+      options: (_form, ctx) => ctx?.itemCategories ?? [],
+      hint: 'Admin adds and removes categories in Admin Control.' },
     { key: 'unit', label: 'Default unit', type: 'select', options: UNITS },
     { key: 'sizes', label: 'Sizes to pick from', type: 'tags', full: true,
       placeholder: '25MM, 32MM, 40MM', hint: "Comma-separated. Leave empty if the size is typed in, or doesn't apply." },

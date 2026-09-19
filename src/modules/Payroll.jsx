@@ -4,7 +4,7 @@ import { Lock, Printer, Unlock, FileText, Pencil, Wallet, Check, Loader2, Rotate
 import { THEME } from '../lib/theme';
 import { supabase } from '../lib/supabase';
 import { inr, monthLabel, thisMonth, today, fmtDate, fmtDateTime } from '../lib/format';
-import { defaultAsOf, monthEnd, monthStart } from '../lib/dates';
+import { defaultAsOf, monthEnd, monthStart, weekLabel } from '../lib/dates';
 import { computePayroll, payrollTotals, PRORATION_LABEL } from '../lib/payroll';
 import { useRecords, friendly } from '../hooks/useRecords';
 import { usePayrollInputs } from '../hooks/usePayrollInputs';
@@ -23,9 +23,14 @@ const MODULE = moduleByKey('payroll');
 
 /**
  * Monthly payroll from the one engine (src/lib/payroll.js). Edit a worker to
- * change their wage per day, days present (after the month), overtime, bonus
- * or penalty. Save a draft to snapshot the sheet; Finalise to lock that
- * month's attendance and advances for everyone except Admin (who can reopen).
+ * change their wage per day, days present (after the month), the extra or the
+ * penalty. Overtime is not edited here — it comes from the in/out times on
+ * Attendance. Advances are logged from the "Log advance" popup at the top.
+ * Save a draft to snapshot the sheet; Finalise to lock that month's attendance
+ * and advances for everyone except Admin (who can reopen).
+ *
+ * "Extra" is the office's word for the `salary_adjustments.bonus` column — the
+ * column and the engine field keep their name, only the labels changed.
  */
 export default function Payroll() {
   const { activeSites, employees, siteName, rules } = useAppData();
@@ -108,7 +113,7 @@ export default function Payroll() {
     { key: 'ot_hours', label: 'OT hours' },
     { key: 'gross_basic', label: 'Salary' },
     { key: 'gross_ot', label: 'OT pay' },
-    { key: 'bonus', label: 'Bonus' },
+    { key: 'bonus', label: 'Extra' },
     { key: 'advances', label: 'Advances' },
     { key: 'penalty', label: 'Penalty' },
     { key: 'net', label: 'Net' },
@@ -119,7 +124,7 @@ export default function Payroll() {
 
   return (
     <div>
-      <SectionHeader title="Payroll" subtitle="Monthly salary from attendance, with bonus, advances and penalties" icon={MODULE.icon} accent={MODULE.accent}
+      <SectionHeader title="Payroll" subtitle="Monthly salary from attendance, with extra, advances and penalties" icon={MODULE.icon} accent={MODULE.accent}
         action={canLogAdvance && <Btn accent={THEME.amber} icon={Wallet} onClick={() => setLogging(true)}>Log advance</Btn>} />
       <LockBanner locked={locked} readOnly={!canEdit('payroll') && !locked} />
 
@@ -176,7 +181,7 @@ export default function Payroll() {
         <TableWrap>
           <thead>
             <tr style={{ background: THEME.panel2 }}>
-              {['Worker', 'Wage / day', 'Days', 'OT h', 'Bonus', 'Advances', 'Penalty', 'Net', 'Paid', 'Balance'].map((h) => <Th key={h}>{h}</Th>)}
+              {['Worker', 'Wage / day', 'Days', 'OT h', 'Extra', 'Advances', 'Penalty', 'Net', 'Paid', 'Balance'].map((h) => <Th key={h}>{h}</Th>)}
               <th />
             </tr>
           </thead>
@@ -298,19 +303,25 @@ const blankToNull = (v) => (v === '' || v === null || v === undefined ? null : N
 const differs = (v, def) => v !== '' && Math.abs(Number(v) - Number(def)) > 0.004;
 
 /**
- * Wage per day × days present = salary, + overtime, + bonus, − advances,
+ * Wage per day × days present = salary, + overtime, + extra, − advances,
  * − penalty = net payable. Fields left at the attendance figure are saved
  * blank, so later attendance changes still flow through.
+ *
+ * Overtime is read-only here: it comes from the in/out times on Attendance.
+ * An `ot_hours` already stored on the row (set before this screen dropped the
+ * input) is carried through untouched so nobody's pay silently changes.
  */
 function PayEditor({ row, month, calc, rules, editable, canEdit, final, siteFiltered, onSaved }) {
   const base = useMemo(() => calc(null), [calc]);
   const saved = row.adjustment;
   const monthOver = today() > monthEnd(month);
 
+  // An OT override saved before overtime moved to Attendance — kept, not shown.
+  const savedOt = saved?.ot_hours === null || saved?.ot_hours === undefined ? null : Number(saved.ot_hours);
+
   const [form, setForm] = useState(() => ({
     day_rate: String(saved?.day_rate ?? base?.day_rate ?? ''),
     days_present: String(saved?.days_present ?? base?.paid_days ?? ''),
-    ot_hours: String(saved?.ot_hours ?? base?.ot_hours ?? ''),
     bonus: Number(saved?.bonus) ? String(saved.bonus) : '',
     penalty: Number(saved?.penalty) ? String(saved.penalty) : '',
     note: saved?.note ?? '',
@@ -327,12 +338,12 @@ function PayEditor({ row, month, calc, rules, editable, canEdit, final, siteFilt
       month,
       day_rate: differs(form.day_rate, base.day_rate) ? Number(form.day_rate) : null,
       days_present: monthOver && differs(form.days_present, base.paid_days) ? Number(form.days_present) : null,
-      ot_hours: differs(form.ot_hours, base.ot_hours) ? Number(form.ot_hours) : null,
+      ot_hours: savedOt,
       bonus: blankToNull(form.bonus) ?? 0,
       penalty: blankToNull(form.penalty) ?? 0,
       note: form.note.trim() || null,
     };
-  }, [base, form, row.employee_id, month, monthOver]);
+  }, [base, form, row.employee_id, month, monthOver, savedOt]);
 
   const noEdits = !draft || (draft.day_rate === null && draft.days_present === null && draft.ot_hours === null && !draft.bonus && !draft.penalty);
   const preview = useMemo(() => (draft ? calc(noEdits ? null : draft) : null), [calc, draft, noEdits]);
@@ -341,7 +352,7 @@ function PayEditor({ row, month, calc, rules, editable, canEdit, final, siteFilt
 
   async function save(e) {
     e.preventDefault();
-    const values = [form.day_rate, form.days_present, form.ot_hours, form.bonus, form.penalty].map(blankToNull);
+    const values = [form.day_rate, form.days_present, form.bonus, form.penalty].map(blankToNull);
     if (values.some((v) => v !== null && (Number.isNaN(v) || v < 0))) { setError('Amounts, days and hours can\'t be negative.'); return; }
     if (monthOver && Number(form.days_present) > 31) { setError('Days present can\'t be more than 31.'); return; }
     setSaving(true);
@@ -359,7 +370,7 @@ function PayEditor({ row, month, calc, rules, editable, canEdit, final, siteFilt
     if (!window.confirm(`Clear the edits for ${row.name} and go back to the attendance figures?`)) return;
     const { error: err } = await supabase.from('salary_adjustments').delete().eq('employee_id', row.employee_id).eq('month', month);
     if (err) { setError(friendly(err)); return; }
-    setForm({ day_rate: String(base.day_rate), days_present: String(base.paid_days), ot_hours: String(base.ot_hours), bonus: '', penalty: '', note: '' });
+    setForm({ day_rate: String(base.day_rate), days_present: String(base.paid_days), bonus: '', penalty: '', note: '' });
     onSaved();
   }
 
@@ -385,18 +396,27 @@ function PayEditor({ row, month, calc, rules, editable, canEdit, final, siteFilt
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Overtime hours" hint={`Attendance: ${base.ot_hours} h`}>
-            <Input type="number" min="0" step="0.5" inputMode="decimal" value={form.ot_hours} onChange={(e) => set('ot_hours', e.target.value)} />
+          <Field label="Salary (₹)" hint={`${preview.paid_days} day${preview.paid_days === 1 ? '' : 's'} × ${inr(preview.day_rate)}`}>
+            <div className="py-2.5 font-semibold">{inr(preview.gross_basic)}</div>
           </Field>
-          <Field label="Wage per hour">
-            <div className="py-2.5">{inr(preview.hourly_rate)}<span className="text-xs" style={{ color: THEME.textDim }}> = wage per day ÷ {rules.standard_hours} h{mult !== 1 ? ` · OT paid × ${mult}` : ''}</span></div>
+          <Field label="Overtime (from attendance)"
+            hint={(
+              <>
+                {inr(preview.hourly_rate)}/h = wage per day ÷ {rules.standard_hours} h{mult !== 1 ? ` · paid × ${mult}` : ''}. Overtime follows the in and out times —
+                {' '}change them under <Link to="/attendance" style={{ color: THEME.orange }}>Attendance</Link>.
+              </>
+            )}>
+            <div className="py-2.5">
+              {preview.ot_hours ? `${preview.ot_hours} h` : 'None'}
+              <span className="text-xs" style={{ color: THEME.textDim }}> · {inr(preview.gross_ot)}</span>
+            </div>
           </Field>
         </div>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Bonus (+ ₹)">
+          <Field label="Extra (+ ₹)">
             <Input type="number" min="0" step="1" inputMode="numeric" placeholder="0" value={form.bonus} onChange={(e) => set('bonus', e.target.value)} />
           </Field>
-          <Field label="Advances (− ₹)" hint="From logged advances">
+          <Field label="Advances (− ₹)" hint="Taken this month — record them with “Log advance” at the top of Payroll.">
             <div className="py-2.5" style={{ color: THEME.amber }}>{preview.advances ? inr(preview.advances) : '—'}</div>
           </Field>
           <Field label="Penalty (− ₹)">
@@ -404,14 +424,14 @@ function PayEditor({ row, month, calc, rules, editable, canEdit, final, siteFilt
           </Field>
         </div>
         <Field label="Note">
-          <Input value={form.note} onChange={(e) => set('note', e.target.value)} placeholder="e.g. 2 days unmarked at Hospital site; Diwali bonus" />
+          <Input value={form.note} onChange={(e) => set('note', e.target.value)} placeholder="e.g. 2 days unmarked at Hospital site; Diwali extra" />
         </Field>
       </fieldset>
 
       <div className="rounded-lg p-3 space-y-1.5" style={{ background: THEME.panel2 }}>
         <Line label={`Salary: ${preview.paid_days} day${preview.paid_days === 1 ? '' : 's'} × ${inr(preview.day_rate)}`} value={inr(preview.gross_basic)} />
         <Line label={`Overtime: ${preview.ot_hours} h × ${inr(preview.hourly_rate)}${mult !== 1 ? ` × ${mult}` : ''}`} value={inr(preview.gross_ot)} />
-        <Line label="Bonus" value={`+${inr(preview.bonus)}`} tone={preview.bonus ? 'green' : undefined} />
+        <Line label="Extra" value={`+${inr(preview.bonus)}`} tone={preview.bonus ? 'green' : undefined} />
         <Line label="Advances" value={`-${inr(preview.advances)}`} tone={preview.advances ? 'amber' : undefined} />
         <Line label="Penalty" value={`-${inr(preview.penalty)}`} tone={preview.penalty ? 'red' : undefined} />
         <div className="my-1" style={{ height: 1, background: THEME.border }} />
@@ -438,11 +458,16 @@ function PayEditor({ row, month, calc, rules, editable, canEdit, final, siteFilt
 
 /* ------------------------------ log advance ------------------------------ */
 
-/** Tick workers (grouped by site), type what each was given, save them in one go. */
+/**
+ * Tick workers (grouped by site), type what each was given, save them in one
+ * go. This popup is the only way to record an advance. The week label is
+ * filled from the date (Monday–Sunday) and stays editable.
+ */
 function AdvanceForm({ onDone, onCancel }) {
   const { activeEmployees, activeSites, siteName } = useAppData();
   const [date, setDate] = useState(today());
-  const [week, setWeek] = useState('');
+  const [week, setWeek] = useState(() => weekLabel(today()));
+  const [weekEdited, setWeekEdited] = useState(false);
   const [remarks, setRemarks] = useState('');
   const [siteId, setSiteId] = useState('');
   const [defaultAmount, setDefaultAmount] = useState('1000');
@@ -471,6 +496,12 @@ function AdvanceForm({ onDone, onCancel }) {
   const ticked = Object.entries(amounts);
   const total = ticked.reduce((s, [, v]) => s + (Number(v) || 0), 0);
 
+  // The week follows the date until someone types their own label.
+  function pickDate(value) {
+    setDate(value);
+    if (!weekEdited && value) setWeek(weekLabel(value));
+  }
+
   async function submit(e) {
     e.preventDefault();
     const list = ticked.filter(([, v]) => Number(v) > 0);
@@ -479,7 +510,7 @@ function AdvanceForm({ onDone, onCancel }) {
     setSaving(true);
     setError(null);
     const { error: err } = await supabase.from('advances').insert(list.map(([employee_id, v]) => ({
-      date, employee_id, amount: Number(v), week: week || null, remarks: remarks || null,
+      date, employee_id, amount: Number(v), week: week.trim() || null, remarks: remarks || null,
     })));
     setSaving(false);
     if (err) { setError(friendly(err)); return; }
@@ -489,8 +520,10 @@ function AdvanceForm({ onDone, onCancel }) {
   return (
     <form onSubmit={submit} className="space-y-4 text-sm">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Field label="Date"><Input type="date" required value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-        <Field label="Week label"><Input value={week} onChange={(e) => setWeek(e.target.value)} placeholder="e.g. Week 3" /></Field>
+        <Field label="Date" required><Input type="date" required value={date} onChange={(e) => pickDate(e.target.value)} /></Field>
+        <Field label="Week label" hint="Monday to Sunday of that date — change it if you say it differently.">
+          <Input value={week} onChange={(e) => { setWeek(e.target.value); setWeekEdited(true); }} placeholder={weekLabel(date)} />
+        </Field>
         <Field label="Site">
           <SiteSelect sites={activeSites} placeholder="All sites" value={siteId} onChange={(e) => setSiteId(e.target.value)} />
         </Field>

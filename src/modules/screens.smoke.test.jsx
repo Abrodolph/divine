@@ -13,8 +13,13 @@ import { MemoryRouter } from 'react-router-dom';
 const M = new Date().toISOString().slice(0, 7);
 const D = `${M}-05`;
 const FIXTURES = {
-  sites: [{ id: 's1', name: 'Hospital', active: true, lat: 19.07, lng: 72.87, radius_m: 200, location: 'Pune' }, { id: 's2', name: 'Mall', active: false }],
-  site_settings: [{ site_id: 's1', capture_mode: 'muster', shift_start: '09:00:00', grace_min: 15, weekly_off_day: 0 }],
+  sites: [{
+    id: 's1', name: 'Hospital', active: true, lat: 19.07, lng: 72.87, radius_m: 200, location: 'Pune',
+    client_name: 'Swami Vivekanand Health Mission Society', client_address: 'Dehradun 248001', client_gstin: '05AAAAA0000A1Z5',
+    ship_to_name: 'Keshav Madhav Chikisalaya', ship_to_address: 'Vrindavan, Mathura - 281504', ship_to_gstin: 'N.A',
+    po_no: '86/ SVHMS/ 2025-26', work_purpose: 'FIRE FIGHTING WORK',
+  }, { id: 's2', name: 'Mall', active: false }],
+  site_settings: [{ site_id: 's1', capture_mode: 'muster', shift_start: '09:00:00', shift_end: '18:00:00', grace_min: 15, weekly_off_day: 0, freeze_daily: true }],
   employees: [
     { id: 'e1', name: 'Ravi', trade: 'Fitter', site_id: 's1', wage_type: 'Daily', wage_rate: 700, active: true, aadhaar_last4: '9012', consent_at: '2026-09-01' },
     { id: 'e2', name: 'Sunil', site_id: null, wage_type: 'Monthly', wage_rate: 26000, active: true },
@@ -43,7 +48,7 @@ const FIXTURES = {
     items: [{ request_item_id: 'pri1', description: 'M.S PIPE', size: '100MM', qty: 10, unit: 'MTR', price: 410, gst_pct: 18 }],
     vendors: { name: 'Shah Traders' }, purchase_requests: { doc_no: 'PR-0001-2026' },
   }],
-  goods_receipts: [{ id: 'g1', doc_no: 'GRN-0001-2026', date: D, site_id: 's1', po_id: 'po1', items: [{ description: 'M.S PIPE', po_line: 0, pending_before: 10, qty_received: 5, qty_rejected: 1, reason: 'bent' }], photos: [], purchase_orders: { doc_no: 'PO-0001-2026' } }],
+  goods_receipts: [{ id: 'g1', doc_no: 'GRN-0001-2026', date: D, site_id: 's1', po_id: 'po1', request_id: 'pr1', status: 'submitted', items: [{ description: 'M.S PIPE', po_line: 0, pending_before: 10, qty_received: 5, qty_rejected: 1, reason: 'bent' }], photos: ['https://x/grn.jpg'], purchase_orders: { doc_no: 'PO-0001-2026' } }],
   documents: [
     { id: 'd1', scope: 'company', scope_id: null, category: 'wc_insurance', title: 'WC policy', expires_on: D, files: ['https://x/y.pdf'] },
     { id: 'd2', scope: 'employee', scope_id: 'e1', category: 'aadhaar', title: 'Aadhaar', number: '123456789012', files: [] },
@@ -51,14 +56,41 @@ const FIXTURES = {
   audit_log: [{ id: 1, table_name: 'sites', row_id: 's1', action: 'update', old_row: { name: 'A' }, new_row: { name: 'Hospital' }, changed_by: 'u1', changed_at: D }],
   profiles: [{ id: 'u1', name: 'Owner', role_id: 'admin', active: true, org_id: 'o1' }],
   profile_sites: [],
-  dpr: [{ id: 'dp1', date: D, site_id: 's1', work_done: 'Piping', photos: [] }],
+  dpr: [{
+    id: 'dp1', date: D, site_id: 's1', work_done: 'Piping', weather: 'Sunny', manpower: 2, photos: [],
+    dpr_tasks: [{
+      id: 'dt1', dpr_id: 'dp1', description: 'Sprinkler Installation', size_spec: '15 mm', area: '2nd Floor', qty: 40, unit: 'NOS', sort: 0,
+      dpr_task_manpower: [{ id: 'dm1', task_id: 'dt1', employee_id: 'e1', hours: 5 }],
+    }],
+  }],
+  dpr_tasks: [{ id: 'dt1', dpr_id: 'dp1', description: 'Sprinkler Installation', size_spec: '15 mm', area: '2nd Floor', qty: 40, unit: 'NOS', sort: 0 }],
+  dpr_task_manpower: [{ id: 'dm1', task_id: 'dt1', employee_id: 'e1', hours: 5 }],
+  site_areas: [
+    { id: 'ar1', site_id: 's1', name: 'Basement', sort: 10, active: true },
+    { id: 'ar2', site_id: 's1', name: '2nd Floor', sort: 20, active: true },
+  ],
+  item_categories: [
+    { id: 'ic1', name: 'Pipes, valves & steel', sort: 10, active: true },
+    { id: 'ic2', name: 'Tools', sort: 50, active: true },
+    { id: 'ic3', name: 'Machines', sort: 60, active: true },
+  ],
   rework: [{ id: 'rw1', date: D, site_id: 's1', issue: 'Leak', status: 'Open', photos: [] }],
-  challans: [{ id: 'c1', doc_no: 'DC-0001-2026', date: D, site_id: 's1', items: [{ name: 'Pipe', qty: 2, unit: 'NOS' }] }],
+  challans: [{
+    id: 'c1', doc_no: 'DC-0001-2026', date: D, site_id: 's1', kind: 'material',
+    party: 'Swami Vivekanand Health Mission Society', party_gstin: '09AAAAA0000A1Z5',
+    ship_to_name: 'Keshav Madhav Chikisalaya', ship_to_address: 'Vrindavan, Mathura', purpose: 'FIRE FIGHTING WORK',
+    items: [{ name: 'Pipe', make: 'JINDAL', qty: 2, unit: 'NOS' }],
+  }],
   approvals: [],
   price_history: [{ id: 'ph1', item_id: 'i1', vendor_id: 'v1', price: 410, source: 'po', recorded_at: D, vendors: { name: 'Shah Traders' } }],
 };
 const SINGLES = {
-  org_settings: { org_id: 'o1', name: 'Divine Engineering', timezone: 'Asia/Kolkata' },
+  org_settings: {
+    org_id: 'o1', name: 'Divine Engineering', timezone: 'Asia/Kolkata', gstin: '09GTDPS9124P1ZP',
+    address: 'Ghaziabad, Uttar Pradesh', challan_jurisdiction: 'GHAZIABAD',
+    challan_terms: 'E. & O.E\nGoods Once Sold will not be taken back',
+    challan_tools_note: 'Tools and Tackles TRANSFER are NOT FOR SALE.',
+  },
   payroll_rules: { org_id: 'o1', monthly_proration: 'by_working_days' },
 };
 
@@ -120,7 +152,7 @@ const SCREENS = {
   TeamArchive: [() => import('./TeamArchive'), /Team Archive/],
   Payroll: [() => import('./Payroll'), /Monthly salary from attendance/],
   Documents: [() => import('./Documents'), /Documents/],
-  Advances: [() => import('./Advances'), /Weekly Advance/],
+  DPR: [() => import('./DPR'), /Daily Progress/],
   Reports: [() => import('./Reports'), /Reports/],
   Admin: [() => import('./Admin'), /Admin Control/],
 };

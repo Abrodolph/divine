@@ -23,7 +23,7 @@ const Team = lazy(() => import('./modules/Team'));
 const TeamArchive = lazy(() => import('./modules/TeamArchive'));
 const Payroll = lazy(() => import('./modules/Payroll'));
 const Documents = lazy(() => import('./modules/Documents'));
-const Advances = lazy(() => import('./modules/Advances'));
+const DPR = lazy(() => import('./modules/DPR'));
 const Reports = lazy(() => import('./modules/Reports'));
 const Admin = lazy(() => import('./modules/Admin'));
 
@@ -70,20 +70,15 @@ function Shell() {
           <Route path="team/archive" element={<Guard k="team"><TeamArchive /></Guard>} />
           <Route path="payroll" element={<Guard k="payroll"><Payroll /></Guard>} />
           <Route path="documents" element={<Guard k="documents"><Documents /></Guard>} />
-          <Route path="advances" element={<Guard k="advances"><Advances /></Guard>} />
+          <Route path="dpr" element={<Guard k="dpr"><DPR /></Guard>} />
           <Route path="reports" element={<Guard k="reports"><Reports /></Guard>} />
 
-          {/* Old links from merged / renamed modules */}
+          {/* Old links from merged / renamed modules. Advances are now logged
+              from the Payroll screen's "Log advance" button only. */}
           <Route path="indents" element={<Navigate to="/requirements" replace />} />
+          <Route path="advances" element={<Navigate to="/payroll" replace />} />
 
           {/* Config-driven log modules */}
-          <Route path="dpr" element={
-            <Guard k="dpr">
-              <RecordManager module={moduleByKey('dpr')} table="dpr"
-                title="Daily Progress Report" subtitle="What happened on site today"
-                fields={F.DPR.fields} columns={F.DPR.columns} />
-            </Guard>
-          } />
           <Route path="transport" element={
             <Guard k="transport">
               <RecordManager module={moduleByKey('transport')} table="transport"

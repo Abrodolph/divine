@@ -142,9 +142,9 @@ export function StatusBadge({ value }) {
   const v = String(value).toLowerCase();
   let color = THEME.textDim;
   let bg = 'rgba(155,161,166,0.15)';
-  if (['open', 'pending', 'for review', 'medium', 'due', 'draft'].includes(v)) {
+  if (['open', 'pending', 'for review', 'medium', 'due', 'draft', 'awaiting office check'].includes(v)) {
     color = THEME.amber; bg = 'rgba(255,193,7,0.14)';
-  } else if (['approved', 'fulfilled', 'closed', 'pass', 'issued', 'for construction', 'delivered', 'low', 'paid', 'final', 'verified'].includes(v)) {
+  } else if (['approved', 'accepted', 'fulfilled', 'closed', 'pass', 'issued', 'for construction', 'delivered', 'low', 'paid', 'final', 'verified'].includes(v)) {
     color = THEME.green; bg = 'rgba(62,166,94,0.14)';
   } else if (['fail', 'urgent', 'superseded', 'high', 'rejected', 'expired'].includes(v)) {
     color = THEME.red; bg = 'rgba(215,38,61,0.14)';
