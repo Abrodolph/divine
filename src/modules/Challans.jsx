@@ -8,6 +8,7 @@ import { useAppData } from '../context/AppDataContext';
 import { useAuth } from '../context/AuthContext';
 import { moduleByKey } from '../config/modules';
 import ItemsEditor, { emptyItems, itemsSummary } from '../components/ItemsEditor';
+import { SampleNotice } from '../components/Print';
 import {
   SectionHeader, LockBanner, EmptyState, Loading, Card, Field, Input, TextArea, Select,
   SiteSelect, DeleteBtn, ExportButton, FormShell, Btn, LoadMore, Chip, SubHeading,
@@ -405,6 +406,8 @@ function ChallanPrint({ record, siteName }) {
           <div className="mt-8 border-t border-black w-52 ml-auto">Authorised Signatory</div>
         </div>
       </div>
+
+      <SampleNotice />
 
       <Btn className="no-print mt-6" accent="#111" style={{ background: '#111', color: '#fff' }}
         icon={Printer} onClick={() => window.print()}>

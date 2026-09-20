@@ -1,6 +1,16 @@
 import { Printer, X } from 'lucide-react';
 import { useAppData } from '../context/AppDataContext';
+import { SAMPLE_NOTICE } from '../config/company';
 import { Btn } from './ui';
+
+/** The "not final until signed" line that sits at the foot of every printout. */
+export function SampleNotice() {
+  return (
+    <div className="mt-6 pt-2 border-t border-gray-400 text-[11px] leading-snug text-center uppercase">
+      {SAMPLE_NOTICE}
+    </div>
+  );
+}
 
 /**
  * White A4 sheet with the company letterhead, a Print / Save as PDF button,
@@ -37,6 +47,8 @@ export function PrintSheet({ title, docNo, date, children, onClose, footer }) {
           <div>Approved By: ______________________</div>
         </div>
       )}
+
+      <SampleNotice />
 
       <div className="no-print mt-6 flex gap-2">
         <Btn style={{ background: '#111', color: '#fff', border: '1px solid #111' }} icon={Printer} onClick={() => window.print()}>

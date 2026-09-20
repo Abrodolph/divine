@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fmtTime, inr, localDate, thisMonth, today } from './format';
 import { addDays, daysInMonth, defaultAsOf, eachDate, monthEnd, nextMonthStart, weekStart, weekday } from './dates';
-import { toCSV } from './csv';
+import { toCSV, withNotice } from './csv';
 
 describe('local dates (TZ=Asia/Kolkata)', () => {
   afterEach(() => vi.useRealTimers());
@@ -55,5 +55,10 @@ describe('formatting', () => {
   it('escapes CSV cells', () => {
     const csv = toCSV([{ key: 'a', label: 'Name' }, { key: 'b', label: 'Note', value: (r) => r.b.toUpperCase() }], [{ a: 'Ravi "R"', b: 'x,y' }]);
     expect(csv).toBe('"Name","Note"\n"Ravi ""R""","X,Y"');
+  });
+
+  it('signs off an exported sheet with the not-final notice', () => {
+    const csv = withNotice(toCSV([{ key: 'a', label: 'Name' }], [{ a: 'Ravi' }]));
+    expect(csv).toBe('"Name"\n"Ravi"\n\n"NOTE: ABOVE DATA IS SAMPLE ONLY AND NOT FINAL UNTILL SIGNED BY OWNER / AUTHORISED SIGNATORY"');
   });
 });

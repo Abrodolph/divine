@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:playground": "vite --mode playground --port 5174",
     "build": "vite build",
+    "build:playground": "vite build --mode playground --outDir dist-playground",
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",

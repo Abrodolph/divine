@@ -1,3 +1,5 @@
+import { SAMPLE_NOTICE } from '../config/company';
+
 function csvEscape(v) {
   return `"${String(v ?? '').replace(/"/g, '""')}"`;
 }
@@ -28,6 +30,14 @@ export function downloadCSV(filename, csv) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * The sheet with a blank line and the notice under it, so a download carries
+ * the same "not final until signed" caveat the printed documents do.
+ */
+export function withNotice(csv) {
+  return `${csv}\n\n${csvEscape(SAMPLE_NOTICE)}`;
+}
+
 export function exportCSV(filename, columns, rows) {
-  downloadCSV(filename, toCSV(columns, rows));
+  downloadCSV(filename, withNotice(toCSV(columns, rows)));
 }

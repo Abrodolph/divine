@@ -6,6 +6,8 @@ import { HazardBar, Loading } from './ui';
 import { useAuth } from '../context/AuthContext';
 import { useAppData } from '../context/AppDataContext';
 import { SCREENS, GROUPS, DASHBOARD, ADMIN } from '../config/modules';
+import { PLAYGROUND } from '../lib/supabase';
+
 
 export default function Layout() {
   const { profile, role, canView, isAdmin, signOut } = useAuth();
@@ -18,6 +20,12 @@ export default function Layout() {
 
   return (
     <div style={{ background: THEME.bg, minHeight: '100vh', color: THEME.text }}>
+      {PLAYGROUND && (
+        <div className="no-print text-center text-xs font-semibold tracking-wide py-1.5"
+          style={{ background: THEME.amber, color: '#111' }}>
+          PLAYGROUND — separate test database. Nothing here touches the live Divine Engineering app.
+        </div>
+      )}
       {/* ---------------------------- header ---------------------------- */}
       <header
         className="no-print sticky top-0 z-30 flex items-center justify-between gap-3 px-3 md:px-6 py-3"

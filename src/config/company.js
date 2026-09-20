@@ -25,3 +25,10 @@ export const COMPANY = {
     + 'capturing or theft of the Tools is subject to Legal action.',
   challan_footer: 'For DIVINE ENGINEERING SERVICES',
 };
+
+/**
+ * Printed and exported documents carry this line so nobody treats an unsigned
+ * copy — a draft payslip, a half-finished attendance register — as final.
+ */
+export const SAMPLE_NOTICE =
+  'NOTE: ABOVE DATA IS SAMPLE ONLY AND NOT FINAL UNTILL SIGNED BY OWNER / AUTHORISED SIGNATORY';

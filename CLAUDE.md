@@ -32,6 +32,15 @@ The app requires a `.env` with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`
 (`src/lib/supabase.js` throws without them; there is no `.env.example`). The
 `VITE_` values are baked into the build, so they must also be set on the host.
 
+**Playground** — a separate test copy with its own Supabase project, for
+experimenting without touching live data: `.env.playground` (template:
+`.env.playground.example`, gitignored) with `VITE_PLAYGROUND_SUPABASE_URL` /
+`_ANON_KEY`, then `npm run dev:playground` (port 5174) or `build:playground`
+(`dist-playground/`). The variable names differ from `VITE_SUPABASE_*` on
+purpose — Vite also loads `.env` in that mode — and `src/lib/supabase.js`
+refuses to start if the playground points at the live URL. An amber banner
+marks every playground page.
+
 `docs/` holds the analysis/roadmap (`01-…`), per-phase prompts (`02-…`), the
 revamp scope (`checklist.md`) and `V1-UPGRADE.md` (how to apply v1 to a
 Supabase project). Check them before large changes.
