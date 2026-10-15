@@ -2,6 +2,7 @@ import {
   Home, Users2, FileText, ClipboardList, PackageCheck, ShoppingCart, Boxes, Store,
   FileCheck2, Truck, ScrollText, PenTool, RotateCcw, Building2, BadgeCheck,
   Users, Wallet, ShieldCheck, CalendarCheck, FolderLock, IdCard, BarChart3, Stamp, Banknote,
+  Target,
 } from 'lucide-react';
 import { THEME } from '../lib/theme';
 
@@ -16,6 +17,9 @@ import { THEME } from '../lib/theme';
 export const MODULES = [
   { key: 'attendance',          label: 'Attendance',          short: 'Attendance', icon: Users2,        accent: THEME.orange, group: 'Site' },
   { key: 'attendance_verify',   label: 'Verify Attendance',   short: 'Verify',     icon: BadgeCheck,    accent: THEME.green,  group: 'Site' },
+  // Two halves of one day: Goals set the expectation in the morning, the DPR
+  // answers it in the evening. Keep them next to each other in the menu.
+  { key: 'goals',               label: 'Daily Goals',         short: 'Goals',      icon: Target,        accent: THEME.blue,   group: 'Site' },
   { key: 'dpr',                 label: 'Daily Progress',      short: 'DPR',        icon: FileText,      accent: THEME.green,  group: 'Site' },
   { key: 'requirements',        label: 'Site Requests',       short: 'Requests',   icon: ClipboardList, accent: THEME.amber,  group: 'Site' },
   { key: 'rework',              label: 'Rework Log',          short: 'Rework',     icon: RotateCcw,     accent: THEME.red,    group: 'Site' },

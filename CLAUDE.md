@@ -57,9 +57,11 @@ Supabase project). Check them before large changes.
   (Transport, MTC, Drawings, Rework, Items, Vendors). One edit changes form,
   table and CSV.
 - `src/config/documents.js` — document categories per scope and which expire.
-- `src/config/dprTasks.js` — the DPR task catalogue (from the DPR sheet of
-  `public/SITE REQUIREMENT TAB.xlsx`) and the weather list. The dropdown is a
-  shortcut, not a restriction: a typed task is always allowed.
+- `src/config/dprTasks.js` — the task catalogue shared by Goals and the DPR
+  (from the DPR sheet of `public/SITE REQUIREMENT TAB.xlsx`), the weather list,
+  `TASK_STATUS` (the three answers a goal can get) and `DELAY_REASONS`. The
+  dropdowns are shortcuts, not restrictions: a typed task or reason is always
+  allowed.
 
 **Screens**
 
@@ -76,10 +78,45 @@ Supabase project). Check them before large changes.
   on the roll) and TeamArchive (`/team/archive`, workers who left) — both
   render `team/Roster.jsx` and share the `team` permission — Payroll (own
   `payroll` permission: pay table, per-worker pay editor, "Log advance" bulk
-  popup, runs), DPR (date-wise, tasks with per-worker hours), Documents,
+  popup, runs), **Goals** and **DPR** (the day's cycle — see below), Documents,
   Reports, Admin (people, permissions, freeze, company + challan wording,
   site areas, material categories, payroll rules, audit log). Screens are
   lazy-loaded in `App.jsx`.
+- **The day is a cycle: Goals in the morning, DPR in the evening.** Goals
+  (own `goals` permission) set what a site is expected to deliver — tasks with
+  a target quantity and the crew meant to be on each. The DPR is no longer a
+  diary: it seeds its task list from that day's goal sheet and every goal must
+  be answered `met` / `partial` / `not_met`; the last two also need where the
+  work stands (`status_note`) and why it slipped (`delay_reason`). Work nobody
+  planned is logged under "Unplanned work", with no `goal_task_id`. Crew is per
+  worker per task, and `dpr_task_manpower.worked` records that one of the two
+  people planned for a task didn't actually do it. `DprForm` reconciles the two
+  with `mergeGoals()` (exported from `DPR.jsx`): a goal dropped from the sheet
+  survives as unplanned work rather than losing what was typed into it.
+- **Setting goals raises the DPR by itself — "Awaiting confirmation".** Nobody
+  has to remember to start a report. The DPR screen loads every goal sheet and
+  lists any with an unanswered goal at the top, one card per sheet, answered in
+  place (`PendingCard` → `DprForm` with `inline` and `fixed={{date, site_id}}`,
+  so there's no date or site to pick and weather/material/photos sit behind a
+  disclosure). `TaskPlanner`'s "Mark all done" settles a day that went to plan
+  in one tap. **The queue is derived, never stored** — "a goal with no answer"
+  IS the request, so there is no pending row to drift out of step with the
+  goals, and no `status` column on `dpr`. It is keyed on unanswered
+  `goal_task_id`s rather than on "(site, date) has no report", so a goal added
+  to a sheet after its report was filed reappears; in that case the card
+  carries the existing `report` and edits it instead of filing a second report
+  for the same day (`dpr` has no unique constraint on site + date). "Report
+  without goals" is the remaining manual entry point, for a day nobody planned.
+- *TaskPlanner* (`src/components/TaskPlanner.jsx`) — the task editor **both**
+  screens use, `mode="plan"` for Goals and `mode="report"` for the DPR. It
+  replaced a form that showed six fields and a checkbox per worker for every
+  task at once. One line per task (quantity, crew and the status pills are on
+  the card; spec/location/remarks are behind a chevron), crew as chips from a
+  searchable list instead of a checkbox wall, and "Add tasks" is a multi-select
+  over the catalogue so a day's work goes in with one dialog. Export
+  `tasksToPayload(tasks, dayHours, { reporting })` to build the RPC payload and
+  `taskFromRow` / `blankTask` to build form state; `TaskDatalists` must be
+  rendered once per form.
 - Old route `/indents` redirects to `/requirements`; `/advances` redirects to
   `/payroll`. Module keys `requirements` and `material_received` were kept (now
   Site Requests and Goods Received) so existing role permissions carry over.
@@ -143,6 +180,14 @@ Supabase project). Check them before large changes.
   OT + bonus; net = gross − advances to `asOf` − penalty; balance = net −
   `payroll_payments`. The pay editor previews by calling the engine with the
   draft edit. No screen does its own wage maths.
+- `taskHours.js` — how a worker's day is divided between the tasks they're on,
+  for Goals and the DPR. A supervisor assigns people, not arithmetic: every
+  hours box he leaves blank gets an equal share of what's left of that worker's
+  standard day (`payroll_rules.standard_hours`, 9) after the boxes he did fill
+  in, so a worker on three tasks lands on 3 + 3 + 3 and typing 5 in one re-splits
+  the other two to 2 + 2. `resolveTaskHours(tasks, dayHours)` is what both forms
+  call on save; `dayTotals()` feeds the per-worker day strip. Nothing here
+  affects pay — OT still comes from attendance.
 - `procurement.js` — request status machine (`MANUAL_TRANSITIONS`, mirrors
   `purchase_requests_before()`), quote totals, `comparative()`,
   `poLinesFromQuote`, `receiptLinesForPo`.
@@ -174,7 +219,9 @@ wins, and every new rule needs a test in `supabase/tests/schema.test.js`.
 > - **Changing what existing data means** (e.g. a payroll rule default, a
 >   permission key, a status value) needs an explicit update of existing rows
 >   in a guarded migration, not only a new default. Examples:
->   `standard_hours_9`, `payroll_permission_split`.
+>   `standard_hours_9`, `payroll_permission_split`,
+>   `goals_permission_from_dpr` (each existing role's new `goals` permission
+>   starts at whatever it already had on `dpr`).
 > - **Removing or tightening a policy or check** can lock users out of rows
 >   they own, or fail on existing rows (`add constraint` validates old data).
 >   Check existing values first.
@@ -288,12 +335,27 @@ Key pieces:
   status and `fulfilled_on`. So the flow is: raised → approved → ordered
   (awaiting site confirmation) → site confirms with photo → office accepts.
   Receipts from before the rule were accepted once by `accept_grn_history`.
+- **Goals → DPR**: `goals` (one sheet per site per day — the unique index
+  `goals_site_date` is also `save_goals`'s upsert target) → `goal_tasks` →
+  `goal_task_manpower` (planned crew and hours). `save_goals(p jsonb)` writes
+  all three atomically and, unlike `save_dpr`, **updates goal tasks in place by
+  id** rather than deleting and reinserting them — a report that has already
+  answered a goal must keep pointing at it, so revising the sheet during the
+  day can't orphan the answer. Tasks left out of the payload are dropped.
 - **DPR**: `dpr` (the day's header; `work_done` is now nullable) →
   `dpr_tasks` (one per task: description, size_spec, area, qty, unit) →
   `dpr_task_manpower` (who worked on it and for how long; a worker can appear
   on several tasks a day). `save_dpr(p jsonb)` writes all three atomically and
-  derives `dpr.manpower` as the distinct worker count. `site_areas` is the
-  Admin-maintained location list per site.
+  derives `dpr.manpower` as the distinct count of workers **with
+  `worked = true`**. `site_areas` is the Admin-maintained location list per
+  site. The report answers the goals through four columns on `dpr_tasks` —
+  `goal_task_id` (null = unplanned work), `status` (`met|partial|not_met`,
+  checked by `dpr_tasks_status_chk`), `planned_qty` (a frozen copy of the
+  target, so editing the goal later can't rewrite history), `status_note` and
+  `delay_reason` — plus `dpr_task_manpower.worked`. **Every one of these is
+  nullable or defaults to `true`**, so the months of reports filed before goals
+  existed still read correctly: no `goal_task_id` and no `status` means
+  unplanned, which is exactly what they were.
 - **Challan constants**: `sites` carries each site's Bill To / Ship To / PO /
   purpose, `org_settings` the letterhead plus `challan_terms`,
   `challan_jurisdiction`, `challan_tools_note`, `challan_footer`. A saved

@@ -86,7 +86,7 @@ create table if not exists public.roles (
 );
 
 -- Module keys (must match src/config/modules.js), values 'none'|'view'|'edit':
---   attendance, attendance_verify, dpr, requirements, rework,
+--   attendance, attendance_verify, goals, dpr, requirements, rework,
 --   material_received, challans, transport, mtc, drawings,
 --   procurement, procurement_approve, items, vendors,
 --   sites, team, payroll, hr_documents, documents,
@@ -96,6 +96,8 @@ create table if not exists public.roles (
 -- 'requirements' is the site's purchase requests; 'material_received' is
 -- goods receipts against POs; 'procurement' is the office's buying desk.
 -- 'hr_documents' gates Aadhaar and other personal worker documents.
+-- 'goals' is the morning plan for a site; 'dpr' is the evening report that
+-- confirms whether each goal was met — whoever files one usually sets the other.
 
 insert into public.roles (id, name, is_admin, permissions) values
   ('admin', 'Admin', true, '{}'::jsonb),
@@ -118,30 +120,42 @@ begin
   end if;
 end $$;
 
+-- Upgrade path (once): the Goals screen is the other half of the DPR cycle, so
+-- every existing role starts with whatever access it already had to the DPR.
+do $$
+begin
+  if not exists (select 1 from public.schema_migrations where key = 'goals_permission_from_dpr') then
+    update public.roles
+    set permissions = permissions || jsonb_build_object('goals', coalesce(permissions ->> 'goals', permissions ->> 'dpr', 'none'))
+    where not is_admin and permissions <> '{}'::jsonb;
+    insert into public.schema_migrations (key) values ('goals_permission_from_dpr');
+  end if;
+end $$;
+
 -- Defaults for each shipped role. Merged underneath what's already stored, so
 -- an Admin's customisations win and only missing (new) keys are filled in.
 update public.roles r set permissions = d.defaults || r.permissions
 from (values
   ('site', '{
-     "attendance":"edit","attendance_verify":"none","dpr":"edit","requirements":"edit","rework":"edit",
+     "attendance":"edit","attendance_verify":"none","goals":"edit","dpr":"edit","requirements":"edit","rework":"edit",
      "material_received":"edit","challans":"edit","transport":"edit","mtc":"edit","drawings":"view",
      "procurement":"none","procurement_approve":"none","items":"view","vendors":"none",
      "sites":"view","team":"none","payroll":"none","hr_documents":"none","documents":"view",
      "advances":"none","attendance_register":"none","reports":"none"}'::jsonb),
   ('regional', '{
-     "attendance":"edit","attendance_verify":"edit","dpr":"edit","requirements":"edit","rework":"edit",
+     "attendance":"edit","attendance_verify":"edit","goals":"edit","dpr":"edit","requirements":"edit","rework":"edit",
      "material_received":"edit","challans":"edit","transport":"edit","mtc":"edit","drawings":"edit",
      "procurement":"view","procurement_approve":"none","items":"view","vendors":"view",
      "sites":"view","team":"none","payroll":"none","hr_documents":"none","documents":"view",
      "advances":"none","attendance_register":"view","reports":"none"}'::jsonb),
   ('office', '{
-     "attendance":"view","attendance_verify":"none","dpr":"view","requirements":"edit","rework":"view",
+     "attendance":"view","attendance_verify":"none","goals":"view","dpr":"view","requirements":"edit","rework":"view",
      "material_received":"edit","challans":"edit","transport":"edit","mtc":"edit","drawings":"edit",
      "procurement":"edit","procurement_approve":"none","items":"edit","vendors":"edit",
      "sites":"edit","team":"edit","payroll":"edit","hr_documents":"edit","documents":"edit",
      "advances":"edit","attendance_register":"none","reports":"view"}'::jsonb),
   ('viewer', '{
-     "attendance":"view","attendance_verify":"none","dpr":"view","requirements":"view","rework":"view",
+     "attendance":"view","attendance_verify":"none","goals":"view","dpr":"view","requirements":"view","rework":"view",
      "material_received":"view","challans":"view","transport":"view","mtc":"view","drawings":"view",
      "procurement":"view","procurement_approve":"none","items":"view","vendors":"view",
      "sites":"view","team":"view","payroll":"view","hr_documents":"none","documents":"view",
@@ -503,15 +517,160 @@ create table if not exists public.dpr_task_manpower (
   unique (task_id, employee_id)
 );
 
+-- The day's cycle, in two halves:
+--   GOALS  — set in the morning: what this site is expected to deliver today.
+--   DPR    — filed at the end of the day: for each goal, was it met or not?
+-- A goal sheet has the same shape as a report's task list (description, spec,
+-- area, qty, unit, planned crew with hours) so a goal carries straight into
+-- the report instead of being typed twice.
+create table if not exists public.goals (
+  id          uuid primary key default gen_random_uuid(),
+  org_id      uuid not null default public.current_org() references public.orgs(id),
+  date        date not null default current_date,
+  site_id     uuid references public.sites on delete cascade,
+  note        text,
+  set_by      text,
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users default auth.uid()
+);
+
+-- One goal sheet per site per day, and the upsert target for save_goals.
+create unique index if not exists goals_site_date on public.goals (site_id, date);
+
+create table if not exists public.goal_tasks (
+  id          uuid primary key default gen_random_uuid(),
+  org_id      uuid not null default public.current_org() references public.orgs(id),
+  goal_id     uuid not null references public.goals on delete cascade,
+  description text not null,          -- picked from the task catalogue, or typed
+  size_spec   text,
+  area        text,
+  qty         numeric,                -- the target for the day
+  unit        text,
+  remarks     text,
+  sort        integer not null default 0,
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users default auth.uid()
+);
+
+-- Who is meant to work on that goal, and for how long.
+create table if not exists public.goal_task_manpower (
+  id          uuid primary key default gen_random_uuid(),
+  org_id      uuid not null default public.current_org() references public.orgs(id),
+  task_id     uuid not null references public.goal_tasks on delete cascade,
+  employee_id uuid not null references public.employees on delete cascade,
+  hours       numeric check (hours is null or (hours > 0 and hours <= 24)),
+  created_at  timestamptz not null default now(),
+  created_by  uuid references auth.users default auth.uid(),
+  unique (task_id, employee_id)
+);
+
+-- A report task now answers a goal. `goal_task_id` null = unplanned work that
+-- came up during the day, or a report filed before goals existed; `status`
+-- null means the same, so every report from before this change still reads
+-- correctly. `qty` stays what was actually achieved; `planned_qty` keeps the
+-- target as it stood when the report was filed, so editing the goal later
+-- can't rewrite history.
+alter table public.dpr_tasks add column if not exists goal_task_id uuid references public.goal_tasks on delete set null;
+alter table public.dpr_tasks add column if not exists status text;
+alter table public.dpr_tasks add column if not exists planned_qty numeric;
+alter table public.dpr_tasks add column if not exists status_note text;
+alter table public.dpr_tasks add column if not exists delay_reason text;
+alter table public.dpr_tasks drop constraint if exists dpr_tasks_status_chk;
+alter table public.dpr_tasks add constraint dpr_tasks_status_chk
+  check (status is null or status in ('met', 'partial', 'not_met'));
+
+-- A goal can be met by one of the two workers planned for it, so the report
+-- records per worker whether they actually did the work. Defaults true, which
+-- is what every row written before this change meant.
+alter table public.dpr_task_manpower add column if not exists worked boolean not null default true;
+
+/*
+ * Save a day's goal sheet, its tasks and planned crews in one call.
+ *   p = { id?, date, site_id, note, set_by,
+ *         tasks: [{ id?, description, size_spec, area, qty, unit, remarks,
+ *                   manpower: [{ employee_id, hours }] }] }
+ * Tasks keep their id across an edit (and are updated in place) so a report
+ * that has already answered a goal keeps pointing at it. Tasks left out of
+ * the payload are removed.
+ */
+create or replace function public.save_goals(p jsonb)
+returns uuid language plpgsql security invoker set search_path = public as $$
+declare
+  gid uuid := nullif(p ->> 'id', '')::uuid;
+  t jsonb;
+  m jsonb;
+  tid uuid;
+  n integer := 0;
+begin
+  if nullif(p ->> 'site_id', '') is null or nullif(p ->> 'date', '') is null then
+    raise exception 'Choose the site and the date.' using errcode = 'P0001';
+  end if;
+
+  if gid is null then
+    insert into public.goals (date, site_id, note, set_by)
+    values ((p ->> 'date')::date, (p ->> 'site_id')::uuid,
+            nullif(p ->> 'note', ''), nullif(p ->> 'set_by', ''))
+    on conflict (site_id, date) do update
+      set note = excluded.note, set_by = excluded.set_by
+    returning id into gid;
+  else
+    update public.goals set
+      date = (p ->> 'date')::date, site_id = (p ->> 'site_id')::uuid,
+      note = nullif(p ->> 'note', ''), set_by = nullif(p ->> 'set_by', '')
+    where id = gid;
+    if not found then
+      raise exception 'That goal sheet no longer exists, or you can''t change it.' using errcode = 'P0001';
+    end if;
+  end if;
+
+  delete from public.goal_tasks
+  where goal_id = gid
+    and id not in (
+      select nullif(x ->> 'id', '')::uuid
+      from jsonb_array_elements(coalesce(p -> 'tasks', '[]'::jsonb)) x
+      where nullif(x ->> 'id', '') is not null);
+
+  for t in select * from jsonb_array_elements(coalesce(p -> 'tasks', '[]'::jsonb)) loop
+    tid := nullif(t ->> 'id', '')::uuid;
+    if tid is not null then
+      update public.goal_tasks set
+        description = t ->> 'description', size_spec = nullif(t ->> 'size_spec', ''),
+        area = nullif(t ->> 'area', ''), qty = nullif(t ->> 'qty', '')::numeric,
+        unit = nullif(t ->> 'unit', ''), remarks = nullif(t ->> 'remarks', ''), sort = n
+      where id = tid and goal_id = gid;
+      if not found then tid := null; end if;
+    end if;
+    if tid is null then
+      insert into public.goal_tasks (goal_id, description, size_spec, area, qty, unit, remarks, sort)
+      values (gid, t ->> 'description', nullif(t ->> 'size_spec', ''), nullif(t ->> 'area', ''),
+              nullif(t ->> 'qty', '')::numeric, nullif(t ->> 'unit', ''), nullif(t ->> 'remarks', ''), n)
+      returning id into tid;
+    end if;
+
+    delete from public.goal_task_manpower where task_id = tid;
+    for m in select * from jsonb_array_elements(coalesce(t -> 'manpower', '[]'::jsonb)) loop
+      insert into public.goal_task_manpower (task_id, employee_id, hours)
+      values (tid, (m ->> 'employee_id')::uuid, nullif(m ->> 'hours', '')::numeric)
+      on conflict (task_id, employee_id) do update set hours = excluded.hours;
+    end loop;
+    n := n + 1;
+  end loop;
+
+  return gid;
+end $$;
+
 /*
  * Save a day's report and all its tasks and crews in one call, so a half-saved
  * report can't exist. Runs as the caller, so RLS decides whether they may.
  *   p = { id?, date, site_id, weather, material_used, issues, reported_by,
  *         work_done?, photos: [],
  *         tasks: [{ description, size_spec, area, qty, unit, remarks,
- *                   manpower: [{ employee_id, hours }] }] }
- * Manpower on the report is derived: the number of different workers on the
- * day's tasks. Tasks left out of the payload are removed.
+ *                   goal_task_id?, status?, planned_qty?, status_note?,
+ *                   delay_reason?,
+ *                   manpower: [{ employee_id, hours, worked? }] }] }
+ * Manpower on the report is derived: the number of different workers who
+ * actually worked on the day's tasks. Tasks left out of the payload are
+ * removed.
  */
 create or replace function public.save_dpr(p jsonb)
 returns uuid language plpgsql security invoker set search_path = public as $$
@@ -548,14 +707,20 @@ begin
 
   delete from public.dpr_tasks where dpr_id = did;
   for t in select * from jsonb_array_elements(coalesce(p -> 'tasks', '[]'::jsonb)) loop
-    insert into public.dpr_tasks (dpr_id, description, size_spec, area, qty, unit, remarks, sort)
+    insert into public.dpr_tasks (dpr_id, description, size_spec, area, qty, unit, remarks, sort,
+                                  goal_task_id, status, planned_qty, status_note, delay_reason)
     values (did, t ->> 'description', nullif(t ->> 'size_spec', ''), nullif(t ->> 'area', ''),
-            nullif(t ->> 'qty', '')::numeric, nullif(t ->> 'unit', ''), nullif(t ->> 'remarks', ''), n)
+            nullif(t ->> 'qty', '')::numeric, nullif(t ->> 'unit', ''), nullif(t ->> 'remarks', ''), n,
+            nullif(t ->> 'goal_task_id', '')::uuid, nullif(t ->> 'status', ''),
+            nullif(t ->> 'planned_qty', '')::numeric, nullif(t ->> 'status_note', ''),
+            nullif(t ->> 'delay_reason', ''))
     returning id into tid;
     for m in select * from jsonb_array_elements(coalesce(t -> 'manpower', '[]'::jsonb)) loop
-      insert into public.dpr_task_manpower (task_id, employee_id, hours)
-      values (tid, (m ->> 'employee_id')::uuid, nullif(m ->> 'hours', '')::numeric)
-      on conflict (task_id, employee_id) do update set hours = excluded.hours;
+      insert into public.dpr_task_manpower (task_id, employee_id, hours, worked)
+      values (tid, (m ->> 'employee_id')::uuid, nullif(m ->> 'hours', '')::numeric,
+              coalesce((m ->> 'worked')::boolean, true))
+      on conflict (task_id, employee_id) do update
+        set hours = excluded.hours, worked = excluded.worked;
     end loop;
     n := n + 1;
   end loop;
@@ -564,7 +729,7 @@ begin
     update public.dpr set manpower = (
       select count(distinct mp.employee_id)
       from public.dpr_tasks tk join public.dpr_task_manpower mp on mp.task_id = tk.id
-      where tk.dpr_id = did)
+      where tk.dpr_id = did and mp.worked)
     where id = did;
   end if;
 
@@ -1905,6 +2070,7 @@ begin
       ('musters', '''attendance_verify'''),
       ('attendance_entries', '''attendance_verify'''),
       ('dpr', ''), ('dpr_tasks', ''), ('dpr_task_manpower', ''),
+      ('goals', ''), ('goal_tasks', ''), ('goal_task_manpower', ''),
       ('rework', ''), ('challans', ''), ('transport', ''), ('mtc', ''), ('drawings', ''),
       ('purchase_requests', '''procurement'', ''procurement_approve'''),
       ('purchase_request_items', '''procurement'''),
@@ -2214,6 +2380,11 @@ create index if not exists idx_dpr_date on public.dpr (date desc);
 create index if not exists idx_dpr_tasks_dpr on public.dpr_tasks (dpr_id, sort);
 create index if not exists idx_dpr_manpower_task on public.dpr_task_manpower (task_id);
 create index if not exists idx_dpr_manpower_emp on public.dpr_task_manpower (employee_id);
+create index if not exists idx_dpr_tasks_goal on public.dpr_tasks (goal_task_id);
+create index if not exists idx_goals_date on public.goals (date desc);
+create index if not exists idx_goal_tasks_goal on public.goal_tasks (goal_id, sort);
+create index if not exists idx_goal_manpower_task on public.goal_task_manpower (task_id);
+create index if not exists idx_goal_manpower_emp on public.goal_task_manpower (employee_id);
 create index if not exists idx_site_areas_site on public.site_areas (site_id, sort);
 create index if not exists idx_grn_status on public.goods_receipts (status, date desc);
 create index if not exists idx_advances_date on public.advances (date desc);
@@ -2252,6 +2423,7 @@ begin
       ('employees', 'team', 'site_id'),
       ('employee_rates', 'team', null),
       ('dpr', 'dpr', 'site_id'),
+      ('goals', 'goals', 'site_id'),
       ('rework', 'rework', 'site_id'),
       ('challans', 'challans', 'site_id'),
       ('transport', 'transport', 'site_id'),
@@ -2484,6 +2656,35 @@ create policy dpr_manpower_write on public.dpr_task_manpower for all to authenti
     select 1 from public.dpr_tasks t join public.dpr d on d.id = t.dpr_id
     where t.id = task_id and public.site_in_scope(d.site_id)));
 
+-- Goal tasks and their planned crews follow their goal sheet's site, exactly
+-- as the DPR's tasks follow their report.
+alter table public.goal_tasks enable row level security;
+drop policy if exists goal_tasks_read on public.goal_tasks;
+create policy goal_tasks_read on public.goal_tasks for select to authenticated
+  using (org_id = public.current_org()
+         and exists (select 1 from public.goals g where g.id = goal_id and public.site_in_scope(g.site_id)));
+drop policy if exists goal_tasks_write on public.goal_tasks;
+create policy goal_tasks_write on public.goal_tasks for all to authenticated
+  using (org_id = public.current_org() and public.can_edit('goals')
+         and exists (select 1 from public.goals g where g.id = goal_id and public.site_in_scope(g.site_id)))
+  with check (org_id = public.current_org() and public.can_edit('goals')
+              and exists (select 1 from public.goals g where g.id = goal_id and public.site_in_scope(g.site_id)));
+
+alter table public.goal_task_manpower enable row level security;
+drop policy if exists goal_manpower_read on public.goal_task_manpower;
+create policy goal_manpower_read on public.goal_task_manpower for select to authenticated
+  using (org_id = public.current_org() and exists (
+    select 1 from public.goal_tasks t join public.goals g on g.id = t.goal_id
+    where t.id = task_id and public.site_in_scope(g.site_id)));
+drop policy if exists goal_manpower_write on public.goal_task_manpower;
+create policy goal_manpower_write on public.goal_task_manpower for all to authenticated
+  using (org_id = public.current_org() and public.can_edit('goals') and exists (
+    select 1 from public.goal_tasks t join public.goals g on g.id = t.goal_id
+    where t.id = task_id and public.site_in_scope(g.site_id)))
+  with check (org_id = public.current_org() and public.can_edit('goals') and exists (
+    select 1 from public.goal_tasks t join public.goals g on g.id = t.goal_id
+    where t.id = task_id and public.site_in_scope(g.site_id)));
+
 alter table public.approvals enable row level security;
 drop policy if exists approvals_read on public.approvals;
 create policy approvals_read on public.approvals for select to authenticated using (org_id = public.current_org());
@@ -2642,7 +2843,8 @@ begin
     'payroll_runs', 'payroll_payments', 'working_days', 'salary_adjustments',
     'profiles', 'roles', 'module_locks', 'profile_sites', 'org_settings', 'payroll_rules',
     'items', 'item_categories', 'vendors', 'purchase_requests', 'purchase_request_items', 'quotes',
-    'purchase_orders', 'goods_receipts', 'documents', 'site_areas', 'dpr_tasks', 'dpr_task_manpower'
+    'purchase_orders', 'goods_receipts', 'documents', 'site_areas', 'dpr_tasks', 'dpr_task_manpower',
+    'goals', 'goal_tasks', 'goal_task_manpower'
   ] loop
     begin
       execute format('alter publication supabase_realtime add table public.%I', t);

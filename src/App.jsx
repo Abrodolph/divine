@@ -23,6 +23,7 @@ const Team = lazy(() => import('./modules/Team'));
 const TeamArchive = lazy(() => import('./modules/TeamArchive'));
 const Payroll = lazy(() => import('./modules/Payroll'));
 const Documents = lazy(() => import('./modules/Documents'));
+const Goals = lazy(() => import('./modules/Goals'));
 const DPR = lazy(() => import('./modules/DPR'));
 const Reports = lazy(() => import('./modules/Reports'));
 const Admin = lazy(() => import('./modules/Admin'));
@@ -70,6 +71,7 @@ function Shell() {
           <Route path="team/archive" element={<Guard k="team"><TeamArchive /></Guard>} />
           <Route path="payroll" element={<Guard k="payroll"><Payroll /></Guard>} />
           <Route path="documents" element={<Guard k="documents"><Documents /></Guard>} />
+          <Route path="goals" element={<Guard k="goals"><Goals /></Guard>} />
           <Route path="dpr" element={<Guard k="dpr"><DPR /></Guard>} />
           <Route path="reports" element={<Guard k="reports"><Reports /></Guard>} />
 

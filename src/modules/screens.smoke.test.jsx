@@ -59,12 +59,41 @@ const FIXTURES = {
   dpr: [{
     id: 'dp1', date: D, site_id: 's1', work_done: 'Piping', weather: 'Sunny', manpower: 2, photos: [],
     dpr_tasks: [{
-      id: 'dt1', dpr_id: 'dp1', description: 'Sprinkler Installation', size_spec: '15 mm', area: '2nd Floor', qty: 40, unit: 'NOS', sort: 0,
-      dpr_task_manpower: [{ id: 'dm1', task_id: 'dt1', employee_id: 'e1', hours: 5 }],
+      id: 'dt1', dpr_id: 'dp1', description: 'Sprinkler Installation', size_spec: '15 mm', area: '2nd Floor',
+      qty: 28, unit: 'NOS', sort: 0,
+      goal_task_id: 'gt1', status: 'partial', planned_qty: 40,
+      status_note: 'Risers done, heads pending', delay_reason: 'Material short on site',
+      dpr_task_manpower: [
+        { id: 'dm1', task_id: 'dt1', employee_id: 'e1', hours: 5, worked: true },
+        { id: 'dm2', task_id: 'dt1', employee_id: 'e2', hours: null, worked: false },
+      ],
     }],
   }],
-  dpr_tasks: [{ id: 'dt1', dpr_id: 'dp1', description: 'Sprinkler Installation', size_spec: '15 mm', area: '2nd Floor', qty: 40, unit: 'NOS', sort: 0 }],
-  dpr_task_manpower: [{ id: 'dm1', task_id: 'dt1', employee_id: 'e1', hours: 5 }],
+  dpr_tasks: [{
+    id: 'dt1', dpr_id: 'dp1', description: 'Sprinkler Installation', size_spec: '15 mm', area: '2nd Floor',
+    qty: 28, unit: 'NOS', sort: 0, goal_task_id: 'gt1', status: 'partial', planned_qty: 40,
+  }],
+  dpr_task_manpower: [{ id: 'dm1', task_id: 'dt1', employee_id: 'e1', hours: 5, worked: true }],
+  goals: [{
+    id: 'g1', date: D, site_id: 's1', set_by: 'Vikram', note: 'Pump room must close today',
+    goal_tasks: [
+      {
+        id: 'gt1', goal_id: 'g1', description: 'Sprinkler Installation', size_spec: '15 mm',
+        area: '2nd Floor', qty: 40, unit: 'NOS', sort: 0,
+        goal_task_manpower: [{ id: 'gm1', task_id: 'gt1', employee_id: 'e1', hours: 9 }],
+      },
+      {
+        id: 'gt2', goal_id: 'g1', description: 'Hydrostatic Pressure Testing', size_spec: 'As Per Specification',
+        area: 'Basement', qty: 1, unit: 'NOS', sort: 1,
+        goal_task_manpower: [
+          { id: 'gm2', task_id: 'gt2', employee_id: 'e1', hours: null },
+          { id: 'gm3', task_id: 'gt2', employee_id: 'e2', hours: null },
+        ],
+      },
+    ],
+  }],
+  goal_tasks: [{ id: 'gt1', goal_id: 'g1', description: 'Sprinkler Installation', qty: 40, unit: 'NOS', sort: 0 }],
+  goal_task_manpower: [{ id: 'gm1', task_id: 'gt1', employee_id: 'e1', hours: 9 }],
   site_areas: [
     { id: 'ar1', site_id: 's1', name: 'Basement', sort: 10, active: true },
     { id: 'ar2', site_id: 's1', name: '2nd Floor', sort: 20, active: true },
@@ -152,6 +181,7 @@ const SCREENS = {
   TeamArchive: [() => import('./TeamArchive'), /Team Archive/],
   Payroll: [() => import('./Payroll'), /Monthly salary from attendance/],
   Documents: [() => import('./Documents'), /Documents/],
+  Goals: [() => import('./Goals'), /Goals/],
   DPR: [() => import('./DPR'), /Daily Progress/],
   Reports: [() => import('./Reports'), /Reports/],
   Admin: [() => import('./Admin'), /Admin Control/],
@@ -273,6 +303,97 @@ describe('interactive paths render', () => {
     expect(el.textContent).toMatch(/Save muster/);
     expect(el.textContent).toMatch(/Take crew photo/);
     expect(el.textContent).not.toMatch(/Group photo/);
+    expect(errors.filter((e) => !/not wrapped in act/.test(e))).toEqual([]);
+  });
+
+  it('Goals shows each goal with how the DPR answered it', async () => {
+    const G = (await import('./Goals')).default;
+    const el = await render(<G />);
+    expect(el.textContent).toMatch(/Sprinkler Installation/);
+    expect(el.textContent).toMatch(/target 40 NOS/);
+    expect(el.textContent).toMatch(/Part done/);        // from the dpr_tasks answer
+    expect(el.textContent).toMatch(/Ravi \(9 h\)/);     // planned crew and hours
+    expect(el.textContent).toMatch(/set by Vikram/);
+    expect(errors.filter((e) => !/not wrapped in act/.test(e))).toEqual([]);
+  });
+
+  it('Goals editor shows the crew chips, the day strip and the task picker', async () => {
+    const G = (await import('./Goals')).default;
+    const el = await render(<G />);
+    const edit = el.querySelector('button[title="Edit goals"]');
+    await act(async () => { edit.click(); await new Promise((r) => setTimeout(r, 30)); });
+    expect(document.body.textContent).toMatch(/Standard day/);
+    expect(document.body.textContent).toMatch(/2 tasks/);
+    // Both goals' crews roll up into one per-worker view of the day.
+    expect(document.body.textContent).toMatch(/The day, per worker — 2 on site/);
+    const add = [...document.body.querySelectorAll('button')].find((b) => /Add tasks/.test(b.textContent));
+    await act(async () => { add.click(); await new Promise((r) => setTimeout(r, 20)); });
+    expect([...document.body.querySelectorAll('input')].some(
+      (i) => /Search the task list/.test(i.placeholder)
+    )).toBe(true);
+    expect(document.body.textContent).toMatch(/Not on the list\?/);
+    expect(document.body.textContent).toMatch(/Nothing picked yet/);
+    expect(errors.filter((e) => !/not wrapped in act/.test(e))).toEqual([]);
+  });
+
+  it('DPR card reports the goal outcome, the reason and who did not work', async () => {
+    const D_ = (await import('./DPR')).default;
+    const el = await render(<D_ />);
+    expect(el.textContent).toMatch(/1 of 1 goals met|0 of 1 goals met/);
+    expect(el.textContent).toMatch(/Part done/);
+    expect(el.textContent).toMatch(/28 of 40 NOS/);
+    expect(el.textContent).toMatch(/Now: Risers done, heads pending/);
+    expect(el.textContent).toMatch(/Why: Material short on site/);
+    expect(el.textContent).toMatch(/Did not work on this: Sunil/);
+    expect(errors.filter((e) => !/not wrapped in act/.test(e))).toEqual([]);
+  });
+
+  it('DPR raises a pending request from the goals, with no "add" click', async () => {
+    const D_ = (await import('./DPR')).default;
+    const el = await render(<D_ />);
+    expect(el.textContent).toMatch(/AWAITING CONFIRMATION/);
+    expect(el.textContent).toMatch(/1 waiting/);
+    // gt1 was answered by the filed report; gt2 was added to the sheet after.
+    expect(el.textContent).toMatch(/1 goal added after the report/);
+    expect(el.textContent).toMatch(/Hydrostatic Pressure Testing/);
+    expect(errors.filter((e) => !/not wrapped in act/.test(e))).toEqual([]);
+  });
+
+  it('a pending request is answered in place, and "Mark all done" clears it', async () => {
+    const D_ = (await import('./DPR')).default;
+    const el = await render(<D_ />);
+    const answer = [...el.querySelectorAll('button')].find((b) => /Update report|Answer goals/.test(b.textContent));
+    await act(async () => { answer.click(); await new Promise((r) => setTimeout(r, 50)); });
+    // The form opens inside the card: no date or site to pick, detail tucked away.
+    expect(el.textContent).toMatch(/Against the day’s goals/);
+    expect(el.textContent).toMatch(/Weather, material, issues & photos/);
+    expect(el.textContent).toMatch(/1 goal still to answer/);
+    const all = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Mark all done');
+    await act(async () => { all.click(); await new Promise((r) => setTimeout(r, 20)); });
+    expect(el.textContent).not.toMatch(/still to answer/);
+    expect(errors.filter((e) => !/not wrapped in act/.test(e))).toEqual([]);
+  });
+
+  it('DPR form seeds today\'s goals and will not file until each is answered', async () => {
+    const D_ = (await import('./DPR')).default;
+    const el = await render(<D_ />);
+    const add = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Report without goals');
+    await act(async () => { add.click(); await new Promise((r) => setTimeout(r, 50)); });
+    // The goal sheet is only fetched once the form knows which site it is for.
+    const site = [...document.body.querySelectorAll('select')].find((s) => /Hospital/.test(s.textContent));
+    await act(async () => {
+      site.value = 's1';
+      site.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    expect(document.body.textContent).toMatch(/Against the day’s goals/);
+    expect(document.body.textContent).toMatch(/Hydrostatic Pressure Testing/);
+    expect(document.body.textContent).toMatch(/Pump room must close today/);
+    expect(document.body.textContent).toMatch(/Unplanned work/);
+    expect(document.body.textContent).toMatch(/2 goals still to answer/);
+    const file = [...document.body.querySelectorAll('button')].find((b) => b.textContent === 'File report');
+    await act(async () => { file.click(); await new Promise((r) => setTimeout(r, 20)); });
+    expect(document.body.textContent).toMatch(/Answer every goal first/);
     expect(errors.filter((e) => !/not wrapped in act/.test(e))).toEqual([]);
   });
 

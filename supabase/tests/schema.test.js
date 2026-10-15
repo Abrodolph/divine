@@ -638,3 +638,173 @@ describe('daily progress reports', () => {
     await as(db, admin, "insert into public.site_areas (site_id, name) values ($1, 'Roof')", [siteA]);
   });
 });
+
+describe('the goals → DPR cycle', () => {
+  let db;
+  let site;
+  let viewer;
+  let siteA;
+  let ravi;
+  let sunil;
+
+  const goalTasks = (id) => rows(db.query(
+    'select id, description, qty::float, sort from public.goal_tasks where goal_id = $1 order by sort', [id]));
+
+  beforeAll(async () => {
+    db = await createDb();
+    await createUser(db, { name: 'Owner' });
+    site = await createUser(db, { role: 'site' });
+    viewer = await createUser(db, { role: 'viewer' });
+    siteA = (await one(db.query("insert into public.sites (name, org_id) values ('Hospital', $1) returning id", [ORG]))).id;
+    ravi = (await one(db.query("insert into public.employees (name, org_id, site_id) values ('Ravi', $1, $2) returning id", [ORG, siteA]))).id;
+    sunil = (await one(db.query("insert into public.employees (name, org_id, site_id) values ('Sunil', $1, $2) returning id", [ORG, siteA]))).id;
+  });
+
+  it('shipped roles get goals access alongside the DPR', async () => {
+    const r = await rows(db.query(
+      "select id, permissions ->> 'goals' as goals, permissions ->> 'dpr' as dpr from public.roles where not is_admin order by id"));
+    expect(r.length).toBeGreaterThan(0);
+    r.forEach((role) => expect(role.goals).toBe(role.dpr));
+  });
+
+  it('saves the sheet, its goals and the planned crew in one call', async () => {
+    const { id } = await one(as(db, site, 'select public.save_goals($1) as id', [{
+      date: '2026-09-20', site_id: siteA, set_by: 'Supervisor', note: 'Close the pump room',
+      tasks: [
+        { description: 'Sprinkler Installation', size_spec: '15 mm', area: '2nd Floor', qty: 40, unit: 'NOS',
+          manpower: [{ employee_id: ravi, hours: 4.5 }, { employee_id: sunil, hours: 4.5 }] },
+        { description: 'Pipe Flushing', area: 'Basement', manpower: [{ employee_id: ravi, hours: 4.5 }] },
+      ],
+    }]));
+
+    const tasks = await goalTasks(id);
+    expect(tasks.map((t) => t.description)).toEqual(['Sprinkler Installation', 'Pipe Flushing']);
+    expect(tasks[0].qty).toBe(40);
+    const hours = await rows(db.query(
+      `select m.hours::float from public.goal_task_manpower m join public.goal_tasks t on t.id = m.task_id
+       where t.goal_id = $1 and m.employee_id = $2 order by t.sort`, [id, ravi]));
+    expect(hours.map((h) => h.hours)).toEqual([4.5, 4.5]);
+    expect((await one(db.query('select note from public.goals where id = $1', [id]))).note).toBe('Close the pump room');
+  });
+
+  it('a second sheet for the same site and day updates the first one', async () => {
+    const { id } = await one(as(db, site, 'select public.save_goals($1) as id', [{
+      date: '2026-09-20', site_id: siteA, set_by: 'Supervisor', note: 'Revised plan', tasks: [],
+    }]));
+    const all = await rows(db.query('select id from public.goals where site_id = $1 and date = $2', [siteA, '2026-09-20']));
+    expect(all).toHaveLength(1);
+    expect(all[0].id).toBe(id);
+    expect((await one(db.query('select note from public.goals where id = $1', [id]))).note).toBe('Revised plan');
+  });
+
+  it('records the answer to each goal, with where it stands and why', async () => {
+    const goal = await one(as(db, site, 'select public.save_goals($1) as id', [{
+      date: '2026-09-21', site_id: siteA,
+      tasks: [
+        { description: 'Sprinkler Installation', qty: 40, unit: 'NOS',
+          manpower: [{ employee_id: ravi, hours: 9 }, { employee_id: sunil, hours: 9 }] },
+        { description: 'Pipe Flushing', qty: 1, unit: 'NOS', manpower: [{ employee_id: ravi, hours: 9 }] },
+      ],
+    }]));
+    const [sprinkler, flushing] = await goalTasks(goal.id);
+
+    const report = await one(as(db, site, 'select public.save_dpr($1) as id', [{
+      date: '2026-09-21', site_id: siteA, weather: 'Rain',
+      tasks: [
+        {
+          description: 'Sprinkler Installation', qty: 28, unit: 'NOS',
+          goal_task_id: sprinkler.id, status: 'partial', planned_qty: 40,
+          status_note: 'Risers done, heads pending', delay_reason: 'Material short on site',
+          // Sunil was planned for it but spent the day elsewhere.
+          manpower: [{ employee_id: ravi, hours: 9, worked: true }, { employee_id: sunil, hours: 9, worked: false }],
+        },
+        {
+          description: 'Pipe Flushing', qty: 1, unit: 'NOS',
+          goal_task_id: flushing.id, status: 'met',
+          manpower: [{ employee_id: ravi, hours: 9, worked: true }],
+        },
+        // Work that came up during the day and was never a goal.
+        { description: 'Pipe / Equipment Shifting', manpower: [{ employee_id: sunil, hours: 9 }] },
+      ],
+    }]));
+
+    const answered = await rows(db.query(
+      `select description, status, planned_qty::float, qty::float, status_note, delay_reason, goal_task_id
+       from public.dpr_tasks where dpr_id = $1 order by sort`, [report.id]));
+    expect(answered.map((t) => t.status)).toEqual(['partial', 'met', null]);
+    expect(answered[0]).toMatchObject({
+      planned_qty: 40, qty: 28, status_note: 'Risers done, heads pending', delay_reason: 'Material short on site',
+    });
+    expect(answered[0].goal_task_id).toBe(sprinkler.id);
+    // Unplanned work points at no goal at all.
+    expect(answered[2].goal_task_id).toBeNull();
+
+    // A worker marked as not having worked is kept on the row — that is the
+    // record — but doesn't count towards the day's manpower.
+    const sprinklerCrew = await rows(db.query(
+      `select e.name, m.worked from public.dpr_task_manpower m
+       join public.dpr_tasks t on t.id = m.task_id
+       join public.employees e on e.id = m.employee_id
+       where t.dpr_id = $1 and t.sort = 0 order by e.name`, [report.id]));
+    expect(sprinklerCrew).toEqual([{ name: 'Ravi', worked: true }, { name: 'Sunil', worked: false }]);
+    expect((await one(db.query('select manpower from public.dpr where id = $1', [report.id]))).manpower).toBe(2);
+  });
+
+  it('keeps a goal\'s id when the sheet is edited, so an answer stays attached', async () => {
+    const goal = await one(as(db, site, 'select public.save_goals($1) as id', [{
+      date: '2026-09-22', site_id: siteA,
+      tasks: [{ description: 'Fire Alarm Cable Testing', qty: 5, unit: 'NOS', manpower: [] }],
+    }]));
+    const [before] = await goalTasks(goal.id);
+
+    await as(db, site, 'select public.save_dpr($1)', [{
+      date: '2026-09-22', site_id: siteA,
+      tasks: [{ description: 'Fire Alarm Cable Testing', goal_task_id: before.id, status: 'met', manpower: [] }],
+    }]);
+
+    // The target is revised later in the day; the goal keeps its identity.
+    await as(db, site, 'select public.save_goals($1)', [{
+      id: goal.id, date: '2026-09-22', site_id: siteA,
+      tasks: [{ id: before.id, description: 'Fire Alarm Cable Testing', qty: 8, unit: 'NOS', manpower: [] }],
+    }]);
+
+    const [after] = await goalTasks(goal.id);
+    expect(after.id).toBe(before.id);
+    expect(after.qty).toBe(8);
+    const link = await one(db.query('select status, goal_task_id from public.dpr_tasks where goal_task_id = $1', [before.id]));
+    expect(link).toMatchObject({ status: 'met', goal_task_id: before.id });
+  });
+
+  it('drops a goal left out of the payload', async () => {
+    const goal = await one(as(db, site, 'select public.save_goals($1) as id', [{
+      date: '2026-09-23', site_id: siteA,
+      tasks: [{ description: 'Touch-up Painting', manpower: [] }, { description: 'Pipe Flushing', manpower: [] }],
+    }]));
+    const kept = (await goalTasks(goal.id))[0];
+    await as(db, site, 'select public.save_goals($1)', [{
+      id: goal.id, date: '2026-09-23', site_id: siteA,
+      tasks: [{ id: kept.id, description: 'Touch-up Painting', manpower: [] }],
+    }]);
+    expect((await goalTasks(goal.id)).map((t) => t.description)).toEqual(['Touch-up Painting']);
+  });
+
+  it('refuses a status that isn\'t one of the three answers', async () => {
+    const d = await one(db.query(
+      "insert into public.dpr (site_id, org_id, work_done) values ($1, $2, 'x') returning id", [siteA, ORG]));
+    await expect(db.query(
+      "insert into public.dpr_tasks (dpr_id, org_id, description, status) values ($1, $2, 'x', 'maybe')",
+      [d.id, ORG])).rejects.toThrow();
+  });
+
+  it('refuses a goal sheet with no site or no date', async () => {
+    await expect(as(db, site, 'select public.save_goals($1)', [{ date: '2026-09-24', tasks: [] }]))
+      .rejects.toThrow(/Choose the site and the date/);
+  });
+
+  it('keeps a view-only login out of goals', async () => {
+    await expect(as(db, viewer, "insert into public.goals (site_id, note) values ($1, 'x')", [siteA]))
+      .rejects.toThrow();
+    const seen = await rows(as(db, viewer, 'select id from public.goals'));
+    expect(seen.length).toBeGreaterThan(0);
+  });
+});

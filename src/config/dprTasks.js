@@ -70,3 +70,36 @@ export const DPR_TASK_NAMES = DPR_TASKS.map((t) => t.name);
 export const specFor = (name) => DPR_TASKS.find((t) => t.name === name)?.spec ?? '';
 
 export const WEATHER = ['Sunny', 'Clear', 'Cloudy', 'Rain', 'Extreme Heat'];
+
+/**
+ * How a goal turned out, answered on the DPR. `met` needs nothing more;
+ * `partial` and `not_met` ask for where the work stands and why it slipped.
+ */
+export const TASK_STATUS = [
+  { value: 'met', label: 'Done', tone: 'green' },
+  { value: 'partial', label: 'Part done', tone: 'amber' },
+  { value: 'not_met', label: 'Not done', tone: 'red' },
+];
+
+export const statusLabel = (value) => TASK_STATUS.find((s) => s.value === value)?.label ?? '';
+
+/**
+ * The usual reasons a day's goal slips, so the reason is a tap rather than a
+ * sentence — and so delays can be counted later. Like the task list it's a
+ * shortcut, not a restriction: a typed reason is always allowed.
+ */
+export const DELAY_REASONS = [
+  'Material not delivered',
+  'Material short on site',
+  'Area not ready',
+  'Access blocked by another agency',
+  'Drawing or approval pending',
+  'Client / consultant instruction',
+  'Manpower short',
+  'Machine or tool breakdown',
+  'Power or water not available',
+  'Safety permit not issued',
+  'Rain / weather',
+  'Rework of earlier work',
+  'Worked on higher priority job',
+];
